@@ -496,7 +496,7 @@ def min_boats_required(bookings: List[List[int]]) -> int:
 
     return max_used
 
-@app.route("/sailing-club", methods=["POST"])
+@app.route("/sailing-club/submission", methods=["POST"])
 def sailing_club():
     data = request.get_json(force=True)
     test_cases = data.get("testCases", [])

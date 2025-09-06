@@ -1280,7 +1280,7 @@ def duolingo_sort():
                 return bad_request("All elements must be strings for part ONE.")
             raw = s.strip()
             v: Optional[int] = None
-            if re.fullmatch(r"\\d+", raw):
+            if re.fullmatch(r"\d+", raw):
                 try:
                     v = int(raw)
                 except Exception:

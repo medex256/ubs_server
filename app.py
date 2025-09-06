@@ -423,6 +423,8 @@ def investigate():
 
     # Extract networks array - handle all possible structures
     networks_data = data.get("networks", [])
+    if isinstance(networks_data, dict):
+        networks_data = [networks_data]
     if not isinstance(networks_data, list):
         networks_data = []
 
@@ -434,13 +436,8 @@ def investigate():
             continue
 
         # Get networkId - be flexible about field names but preserve exact value
-        network_id = (
-            item.get("networkId") or 
-            item.get("NetworkId") or 
-            item.get("network_id") or 
-            item.get("id") or
-            item.get("ID")
-        )
+        # According to the spec the key is exactly "networkId"
+        network_id = item.get("networkId")
         
         if network_id is None or str(network_id).strip() == "":
             continue

@@ -45,6 +45,12 @@ def as_xy(pair: Any) -> Optional[Tuple[float, float]]:
     return x, y
 
 
+@app.route("/trivia", methods=["POST"])
+def trivia():
+    res = {
+        "answers": [4, 1, ]
+    }
+
 @app.route("/ticketing-agent", methods=["POST"])
 def ticketing_agent():
     data = request.get_json(silent=True)

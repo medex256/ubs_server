@@ -140,10 +140,7 @@ def ticketing_agent():
 
 @app.route("/")
 def root():
-    resp = make_response(jsonify({"service": "ticketing-agent", "status": "ok"}), 200)
-    resp.headers["Content-Type"] = "application/json"
-    return resp
-
+    return "OK", 200
 
 if __name__ == "__main__":
     # For local development only

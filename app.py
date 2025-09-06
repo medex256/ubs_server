@@ -4,6 +4,9 @@ from typing import Any, Dict, List, Tuple, Optional, Set
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
+from flask_cors import CORS
+import random
+
 try:
     # When running as a package: `python -m ubs_server.app` or `flask run` with APP=ubs_server.app
     from .utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
@@ -15,6 +18,130 @@ import re, math
 import json
 
 app = Flask(__name__)
+CORS(app)
+
+SIZE = 4
+TARGET = 2048
+
+def validate_grid(grid):
+    if not isinstance(grid, list) or len(grid) != SIZE:
+        return False
+    for row in grid:
+        if not isinstance(row, list) or len(row) != SIZE:
+            return False
+        for cell in row:
+            if cell is not None and (not isinstance(cell, int) or cell <= 0):
+                return False
+    return True
+
+def rotate_grid(grid):
+    # 90 deg clockwise
+    return [[grid[SIZE-1-r][c] for r in range(SIZE)] for c in range(SIZE)]
+
+def rotate_times(grid, times):
+    times = (times % 4 + 4) % 4
+    g = grid
+    for _ in range(times):
+        g = rotate_grid(g)
+    return g
+
+def merge_row_left(row):
+    nums = [v for v in row if v is not None]
+    merged = []
+    score_gain = 0
+    i = 0
+    while i < len(nums):
+        if i+1 < len(nums) and nums[i] == nums[i+1]:
+            val = nums[i] * 2
+            merged.append(val)
+            score_gain += val
+            i += 2
+        else:
+            merged.append(nums[i])
+            i += 1
+    while len(merged) < SIZE:
+        merged.append(None)
+    return merged, score_gain
+
+def move_left(grid):
+    out = []
+    moved = False
+    score_gain = 0
+    for r in range(SIZE):
+        before = grid[r]
+        row, gain = merge_row_left(before)
+        out.append(row)
+        score_gain += gain
+        if not moved:
+            if any(row[c] != before[c] for c in range(SIZE)):
+                moved = True
+    return out, moved, score_gain
+
+def apply_move(grid, direction):
+    if direction == 'LEFT':
+        times_in, times_out = 0, 0
+    elif direction == 'UP':
+        times_in, times_out = 3, 1
+    elif direction == 'RIGHT':
+        times_in, times_out = 2, 2
+    elif direction == 'DOWN':
+        times_in, times_out = 1, 3
+    else:
+        raise ValueError('Invalid direction')
+    rotated = rotate_times(grid, times_in)
+    moved_grid, moved, gain = move_left(rotated)
+    restored = rotate_times(moved_grid, times_out)
+    return restored, moved, gain
+
+def empty_cells(grid):
+    return [(r, c) for r in range(SIZE) for c in range(SIZE) if grid[r][c] is None]
+
+def spawn_random_tile(grid):
+    cells = empty_cells(grid)
+    if not cells:
+        return grid
+    r, c = random.choice(cells)
+    val = 2 if random.random() < 0.9 else 4
+    g = [row[:] for row in grid]
+    g[r][c] = val
+    return g
+
+def has_2048(grid):
+    return any(grid[r][c] == TARGET for r in range(SIZE) for c in range(SIZE))
+
+def any_moves_available(grid):
+    if empty_cells(grid):
+        return True
+    for r in range(SIZE):
+        for c in range(SIZE):
+            v = grid[r][c]
+            if r+1 < SIZE and grid[r+1][c] == v:
+                return True
+            if c+1 < SIZE and grid[r][c+1] == v:
+                return True
+    return False
+
+@app.route('/2048', methods=['POST'])
+def play():
+    data = request.get_json(silent=True) or {}
+    grid = data.get('grid')
+    direction = data.get('mergeDirection')
+
+    if not validate_grid(grid):
+        return jsonify(error='Invalid grid'), 400
+    if direction not in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
+        return jsonify(error='Invalid mergeDirection'), 400
+
+    moved_grid, did_move, _ = apply_move(grid, direction)
+    next_grid = spawn_random_tile(moved_grid) if did_move else moved_grid
+
+    end_game = None
+    if has_2048(next_grid):
+        end_game = 'win'
+    elif not any_moves_available(next_grid):
+        end_game = 'lose'
+
+    return jsonify(nextGrid=next_grid, endGame=end_game)
 
 # Import numeral helpers from utils
 # from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
@@ -1377,4 +1504,5 @@ def duolingo_sort():
    
 if __name__ == "__main__":
     # For local development only
-    app.run()
+    # app.run()
+    app.run(host='0.0.0.0', port=3000, debug=False)

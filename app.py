@@ -2120,5 +2120,5 @@ def calculate_mage_combat_time(intel, reserve, stamina):
 
 if __name__ == "__main__":
     # For local development only
-    # app.run()
-    app.run(host='0.0.0.0', port=3000, debug=False)
+    app.run()
+    # app.run(host='0.0.0.0', port=3000, debug=False)

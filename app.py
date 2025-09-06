@@ -202,7 +202,7 @@ def trivia():
             4,  # "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
             3,  # "Operation Safeguard": What is the smallest font size in our question?
             4,  # "Capture The Flag": Which of these are anagrams of the challenge name?
-            4,  # "Filler 1": Where has UBS Global Coding Challenge been held before?
+            3,  # "Filler 1": Where has UBS Global Coding Challenge been held before?
             3
         ]
     }

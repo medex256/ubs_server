@@ -46,7 +46,7 @@ def as_xy(pair: Any) -> Optional[Tuple[float, float]]:
     return x, y
 
 
-@app.route("/trivia", methods=["POST"])
+@app.route("/trivia", methods=["GET"])
 def trivia():
     res = {
         "answers": [4, 1, 2]

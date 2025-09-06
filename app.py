@@ -300,27 +300,46 @@ def find_extra_channels(connections):
     - Undirected graph
     - Self-loops ignored
     - Parallel edges: each instance is removable
+    - Flexible field name detection
     """
     if not isinstance(connections, list) or not connections:
         return []
 
     # Build simple graph adjacency, track original order and multiplicity
     adjacency = {}  # node -> set(neighbors)
-    original_edges = []  # keep original order
+    original_edges = []  # keep original order and format
     multiplicity = {}  # key (a,b) where a<b -> count
 
     def norm(u, v):
         return (u, v) if u <= v else (v, u)
 
+    # Detect field names from first connection
+    spy_field1, spy_field2 = "spy1", "spy2"
+    if connections:
+        first_conn = connections[0]
+        if isinstance(first_conn, dict):
+            keys = list(first_conn.keys())
+            if len(keys) >= 2:
+                # Try to detect spy field names
+                possible_names = ["spy1", "spy2", "Spy1", "Spy2", "agent1", "agent2", "node1", "node2"]
+                found_fields = [k for k in keys if k in possible_names]
+                if len(found_fields) >= 2:
+                    spy_field1, spy_field2 = found_fields[0], found_fields[1]
+                elif len(keys) == 2:
+                    # If exactly 2 keys, assume they are the spy fields
+                    spy_field1, spy_field2 = keys[0], keys[1]
+
     for conn in connections:
         if not isinstance(conn, dict):
             continue
-        u = conn.get("spy1")
-        v = conn.get("spy2")
+        
+        u = conn.get(spy_field1)
+        v = conn.get(spy_field2)
         if not u or not v or u == v:
             continue
 
-        original_edges.append((u, v))
+        # Store original connection format
+        original_edges.append(conn.copy())
         a, b = norm(u, v)
         multiplicity[(a, b)] = multiplicity.get((a, b), 0) + 1
 
@@ -363,16 +382,18 @@ def find_extra_channels(connections):
             parent[node] = None
             dfs(node)
 
-    # Select extras from original edges (preserve order)
+    # Select extras from original edges (preserve original format)
     extras = []
-    for u, v in original_edges:
+    for orig_conn in original_edges:
+        u = orig_conn.get(spy_field1)
+        v = orig_conn.get(spy_field2)
         a, b = norm(u, v)
         if multiplicity.get((a, b), 0) > 1:
             # any parallel instance is removable
-            extras.append({"spy1": u, "spy2": v})
+            extras.append(orig_conn)
         elif (a, b) not in bridges:
             # non-bridge -> on a cycle -> removable
-            extras.append({"spy1": u, "spy2": v})
+            extras.append(orig_conn)
 
     return extras
 
@@ -384,15 +405,23 @@ def investigate():
     Must echo back the exact networkId from the request to avoid 'network not found' errors.
     """
     try:
-        # Parse JSON with explicit error handling
-        data = request.get_json(force=True, silent=False)
+        # Parse JSON - be very permissive
+        data = request.get_json(silent=True)
         if data is None:
-            data = {}
+            # Try alternative parsing methods
+            try:
+                import json
+                raw_data = request.get_data(as_text=True)
+                if raw_data:
+                    data = json.loads(raw_data)
+                else:
+                    data = {}
+            except:
+                data = {}
     except Exception:
-        # Fallback if JSON parsing fails
         data = {}
 
-    # Extract networks array
+    # Extract networks array - handle all possible structures
     networks_data = data.get("networks", [])
     if not isinstance(networks_data, list):
         networks_data = []
@@ -404,12 +433,19 @@ def investigate():
         if not isinstance(item, dict):
             continue
 
-        # Get networkId - this MUST be preserved exactly
-        network_id = item.get("networkId")
-        if network_id is None or network_id == "":
+        # Get networkId - be flexible about field names but preserve exact value
+        network_id = (
+            item.get("networkId") or 
+            item.get("NetworkId") or 
+            item.get("network_id") or 
+            item.get("id") or
+            item.get("ID")
+        )
+        
+        if network_id is None or str(network_id).strip() == "":
             continue
 
-        # Convert networkId to string to ensure consistency
+        # Preserve networkId exactly as received, but ensure it's a string
         network_id = str(network_id)
 
         # Get network edges
@@ -421,10 +457,10 @@ def investigate():
         try:
             extra_channels = find_extra_channels(network_edges)
         except Exception:
-            # Fallback if algorithm fails
+            # Fallback: return empty list if algorithm fails
             extra_channels = []
 
-        # Build response for this network - preserve exact networkId
+        # Build response - always use "networkId" as the key (as per MD spec)
         result_networks.append({
             "networkId": network_id,
             "extraChannels": extra_channels
@@ -433,9 +469,8 @@ def investigate():
     # Build final response
     response_data = {"networks": result_networks}
     
-    resp = make_response(jsonify(response_data), 200)
-    resp.headers["Content-Type"] = "application/json"
-    return resp
+    # Return with proper headers
+    return jsonify(response_data)
 
 
 @app.route("/")

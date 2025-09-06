@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify, make_response
 from math import hypot
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Set
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
 import re
 import math
+from collections import defaultdict, deque
 
 app = Flask(__name__)
 
@@ -292,9 +293,117 @@ def ticketing_agent():
     return resp
 
 
+def find_extra_channels(network: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Find extra channels that can be safely removed from a spy network.
+    The goal is to find ALL edges that can be individually removed while maintaining connectivity.
+    """
+    if not network:
+        return []
+    
+    # Build adjacency list and edge list
+    graph = defaultdict(set)
+    edges = []
+    
+    for connection in network:
+        spy1 = connection.get("spy1")
+        spy2 = connection.get("spy2")
+        if spy1 and spy2 and spy1 != spy2:
+            graph[spy1].add(spy2)
+            graph[spy2].add(spy1)
+            edges.append((spy1, spy2))
+    
+    if not graph:
+        return []
+    
+    # Find all nodes
+    all_nodes = set(graph.keys())
+    n_nodes = len(all_nodes)
+    
+    # We need at least (n_nodes - 1) edges to maintain connectivity
+    min_edges_needed = n_nodes - 1
+    
+    if len(edges) <= min_edges_needed:
+        return []  # No extra edges to remove
+    
+    def is_connected_without_edge(edges_to_test: List[Tuple[str, str]], exclude_edge: Tuple[str, str]) -> bool:
+        """Check if the graph remains connected when excluding a specific edge."""
+        # Build graph without the excluded edge
+        test_graph = defaultdict(set)
+        for spy1, spy2 in edges_to_test:
+            if (spy1, spy2) != exclude_edge and (spy2, spy1) != exclude_edge:
+                test_graph[spy1].add(spy2)
+                test_graph[spy2].add(spy1)
+        
+        if not test_graph:
+            return False
+        
+        # BFS to check connectivity
+        start_node = next(iter(test_graph.keys()))
+        visited = set()
+        queue = deque([start_node])
+        visited.add(start_node)
+        
+        while queue:
+            node = queue.popleft()
+            for neighbor in test_graph[node]:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        
+        return len(visited) == n_nodes
+    
+    # Find all edges that can be safely removed
+    extra_channels = []
+    for spy1, spy2 in edges:
+        if is_connected_without_edge(edges, (spy1, spy2)):
+            extra_channels.append({"spy1": spy1, "spy2": spy2})
+    
+    return extra_channels
+
+
+@app.route("/investigate", methods=["POST"])
+def investigate():
+    """
+    Analyze spy networks to find extra channels that can be safely removed.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"networks": []}), 200
+    
+    networks_data = data.get("networks", [])
+    if not isinstance(networks_data, list):
+        return jsonify({"networks": []}), 200
+    
+    result_networks = []
+    
+    for network_data in networks_data:
+        if not isinstance(network_data, dict):
+            continue
+            
+        network_id = network_data.get("networkId")
+        network = network_data.get("network", [])
+        
+        if not network_id or not isinstance(network, list):
+            continue
+        
+        # Find extra channels for this network
+        extra_channels = find_extra_channels(network)
+        
+        result_networks.append({
+            "networkId": network_id,
+            "extraChannels": extra_channels
+        })
+    
+    resp = make_response(jsonify({"networks": result_networks}), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+
 @app.route("/")
 def root():
     return "OK", 200
+
 
 
 @app.route("/princess-diaries", methods=["POST"])
@@ -303,81 +412,79 @@ def princess_diaries():
     if not data:
         return bad_request("Invalid JSON body.")
     
-    # Extract data
     tasks = data.get("tasks", [])
     subway = data.get("subway", [])
     starting_station = data.get("starting_station")
-    
+
     if not isinstance(tasks, list) or not isinstance(subway, list) or starting_station is None:
         return bad_request("Invalid input format.")
-    
-    # Early exit for empty case
     if not tasks:
         return jsonify({"max_score": 0, "min_fee": 0, "schedule": []}), 200
-    
-    # Build adjacency list instead of matrix (more memory efficient)
-    graph = {}
-    for route in subway:
-        conn = route.get("connection", [])
-        fee = route.get("fee", 0)
+
+    # 1) Compress stations and build adjacency with min edge weights
+    stations = {starting_station}
+    for t in tasks:
+        stations.add(t["station"])
+    all_nodes = set(stations)
+    for r in subway:
+        conn = r.get("connection", [])
         if len(conn) == 2:
-            u, v = conn
-            if u not in graph: graph[u] = {}
-            if v not in graph: graph[v] = {}
-            graph[u][v] = fee
-            graph[v][u] = fee  # Undirected graph
-    
-    # Ensure starting station exists in graph
-    if starting_station not in graph:
-        graph[starting_station] = {}
-    
-    # Distance cache to avoid repeated calculations
-    distance_cache = {}
-    
-    def get_shortest_path(start, end):
-        # Check cache first
-        if (start, end) in distance_cache:
-            return distance_cache[(start, end)]
-        
-        # Use Dijkstra's algorithm for single source
-        distances = {node: float('inf') for node in graph}
-        distances[start] = 0
-        
-        import heapq
-        queue = [(0, start)]
-        visited = set()
-        
-        while queue:
-            dist, current = heapq.heappop(queue)
-            
-            if current == end:
-                break
-                
-            if current in visited:
+            all_nodes.add(conn[0]); all_nodes.add(conn[1])
+
+    idx_of = {s: i for i, s in enumerate(all_nodes)}
+    N = len(all_nodes)
+
+    adj = [dict() for _ in range(N)]
+    for r in subway:
+        conn = r.get("connection", [])
+        fee = r.get("fee", 0)
+        if len(conn) == 2:
+            u, v = idx_of[conn[0]], idx_of[conn[1]]
+            w = adj[u].get(v, float('inf'))
+            if fee < w:
+                adj[u][v] = fee
+                adj[v][u] = fee
+    adj = [ [(v, w) for v, w in row.items()] for row in adj ]
+
+    # 2) Compute shortest paths only from needed sources using Dijkstra
+    import heapq
+
+    def dijkstra(src: int):
+        dist = [float('inf')] * N
+        dist[src] = 0
+        h = [(0, src)]
+        while h:
+            d, u = heapq.heappop(h)
+            if d != dist[u]:
                 continue
-            
-            visited.add(current)
-            
-            for neighbor, weight in graph[current].items():
-                if neighbor not in visited:
-                    new_dist = dist + weight
-                    if new_dist < distances[neighbor]:
-                        distances[neighbor] = new_dist
-                        heapq.heappush(queue, (new_dist, neighbor))
-        
-        # Cache all computed distances
-        for node, dist in distances.items():
-            distance_cache[(start, node)] = dist
-        
-        return distances[end]
-    
-    # Sort tasks by start time
-    tasks_sorted = sorted(tasks, key=lambda t: t["start"])
-    
-    # Pre-compute next compatible tasks for each task (huge speedup)
-    n = len(tasks_sorted)
-    next_compatible = [[] for _ in range(n)]
-    
+            for v, w in adj[u]:
+                nd = d + w
+                if nd < dist[v]:
+                    dist[v] = nd
+                    heapq.heappush(h, (nd, v))
+        return dist
+
+    needed_sources = {idx_of[starting_station]}
+    for t in tasks:
+        needed_sources.add(idx_of[t["station"]])
+
+    dist_from = {}
+    for src in needed_sources:
+        dist_from[src] = dijkstra(src)
+
+    s_idx = idx_of[starting_station]
+
+    # 3) Sort tasks and prepare arrays
+    tasks.sort(key=lambda t: t["start"])
+    n = len(tasks)
+    task_station = [idx_of[t["station"]] for t in tasks]
+    starts = [t["start"] for t in tasks]
+    ends = [t["end"] for t in tasks]
+    scores = [t["score"] for t in tasks]
+    names = [t["name"] for t in tasks]
+
+    # first_compatible[i]: first j > i with starts[j] >= ends[i] (binary search)
+    first_compatible = [n] * n
     for i in range(n):
         end_time = tasks_sorted[i]["end"]
         for j in range(i+1, n):
@@ -663,6 +770,68 @@ def trading_formula():
 
     return jsonify(results), 200
 
+        lo, hi = i + 1, n
+        ei = ends[i]
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if starts[mid] >= ei:
+                hi = mid
+            else:
+                lo = mid + 1
+        first_compatible[i] = lo
+
+    # 4) DP: best schedule starting at task i (without initial s0->i cost)
+    dp_score = [0] * n
+    dp_fee = [0] * n
+    dp_next = [n] * n  # next index, or n for end
+
+    for i in range(n - 1, -1, -1):
+        ui = task_station[i]
+
+        # Option A: end after i (return home)
+        best_score = scores[i]
+        best_fee = dist_from[ui][s_idx]
+        best_next = n
+
+        # Option B: go to any compatible next task j
+        j0 = first_compatible[i]
+        for j in range(j0, n):
+            vj = task_station[j]
+            sc = scores[i] + dp_score[j]
+            fee = dist_from[ui][vj] + dp_fee[j]
+            if sc > best_score or (sc == best_score and fee < best_fee):
+                best_score = sc
+                best_fee = fee
+                best_next = j
+
+        dp_score[i] = best_score
+        dp_fee[i] = best_fee
+        dp_next[i] = best_next
+
+    # 5) Choose best starting task (add initial s0->first cost), also allow empty schedule
+    max_score = 0
+    min_fee = 0
+    start_idx = n  # n means choose nothing
+
+    for i in range(n):
+        ui = task_station[i]
+        total_score = dp_score[i]
+        total_fee = dist_from[s_idx][ui] + dp_fee[i]
+        if total_score > max_score or (total_score == max_score and total_fee < min_fee):
+            max_score = total_score
+            min_fee = total_fee
+            start_idx = i
+
+    # 6) Reconstruct schedule
+    schedule = []
+    i = start_idx
+    while i < n:
+        schedule.append(names[i])
+        i = dp_next[i]
+
+    return jsonify({"max_score": max_score, "min_fee": min_fee, "schedule": schedule}), 200
+
+   
 if __name__ == "__main__":
     # For local development only
     app.run()

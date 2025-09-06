@@ -440,7 +440,6 @@ def play():
         return jsonify(nextGrid=next_grid, endGame=end_game)
     except Exception:
         return jsonify(error='Internal error'), 500
-
 # Import numeral helpers from utils
 # from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
 app.config['JSON_SORT_KEYS'] = False
@@ -2375,8 +2374,255 @@ def _adv_get_mode_options(mode):
         return {'classicOnly': False, 'zeroBlocks': True, 'star2': True, 'oneRule': True}
     return {'classicOnly': True}
 
+# --- 2048 advanced logic helpers ---
+
+def _is_empty(cell):
+    return cell is None
+
+def _is_zero_tile(cell):
+    return cell == '0'
+
+def _is_star2_tile(cell):
+    return cell == '*2'
+
+def _is_number_tile(cell):
+    return isinstance(cell, int) and cell >= 1
+
+def _adv_validate_grid(grid, size):
+    if not isinstance(grid, list) or len(grid) != size:
+        return False
+    for row in grid:
+        if not isinstance(row, list) or len(row) != size:
+            return False
+        for cell in row:
+            if not (
+                cell is None
+                or (isinstance(cell, str) and cell in ('0', '*2'))
+                or _is_number_tile(cell)
+            ):
+                return False
+    return True
+
+def _adv_rotate_grid(grid):
+    n = len(grid)
+    out = [[None] * n for _ in range(n)]
+    for r in range(n):
+        for c in range(n):
+            out[c][n - 1 - r] = grid[r][c]
+    return out
+
+def _adv_rotate_times(grid, times):
+    k = ((times % 4) + 4) % 4
+    g = grid
+    for _ in range(k):
+        g = _adv_rotate_grid(g)
+    return g
+
+def _adv_deep_clone(grid):
+    return [row[:] for row in grid]
+
+def _adv_empty_cells(grid):
+    cells = []
+    n = len(grid)
+    for r in range(n):
+        for c in range(n):
+            if _is_empty(grid[r][c]):
+                cells.append((r, c))
+    return cells
+
+def _adv_spawn_random_tile(grid):
+    empties = _adv_empty_cells(grid)
+    if not empties:
+        return grid
+    r, c = random.choice(empties)
+    val = 2 if random.random() < 0.9 else 4
+    g = _adv_deep_clone(grid)
+    g[r][c] = val
+    return g
+
+def _adv_has_target(grid, target=2048):
+    for row in grid:
+        for cell in row:
+            if cell == target:
+                return True
+    return False
+
+def _adv_any_moves_available_classic(grid):
+    n = len(grid)
+    if _adv_empty_cells(grid):
+        return True
+    for r in range(n):
+        for c in range(n):
+            v = grid[r][c]
+            if r + 1 < n and v == grid[r + 1][c]:
+                return True
+            if c + 1 < n and v == grid[r][c + 1]:
+                return True
+    return False
+
+def _adv_merge_row_left_classic(row):
+    n = len(row)
+    nums = [v for v in row if _is_number_tile(v)]
+    merged = []
+    i = 0
+    while i < len(nums):
+        if i + 1 < len(nums) and nums[i] == nums[i + 1]:
+            merged.append(nums[i] * 2)
+            i += 2
+        else:
+            merged.append(nums[i])
+            i += 1
+    while len(merged) < n:
+        merged.append(None)
+    return merged
+
+def _adv_move_row_left_advanced(row, options):
+    # options: {'zeroBlocks': bool, 'star2': bool, 'oneRule': bool}
+    n = len(row)
+    out = [None] * n
+    moved = False
+
+    # Zero blockers only if enabled
+    zero_positions = [i for i, v in enumerate(row) if options.get('zeroBlocks', False) and _is_zero_tile(v)]
+    for z in zero_positions:
+        out[z] = '0'
+
+    # Segments split by zeros
+    segments = []
+    start = 0
+    for z in zero_positions:
+        if z > start:
+            segments.append((start, z - 1))
+        start = z + 1
+    if start <= n - 1:
+        segments.append((start, n - 1))
+
+    def set_if_moved():
+        nonlocal moved
+        for i in range(n):
+            if row[i] != out[i]:
+                moved = True
+                return
+
+    for L, R in segments if segments else [(0, n - 1)]:
+        # Extract items excluding None and '0' (zeros handled above when enabled)
+        items = []
+        for i in range(L, R + 1):
+            v = row[i]
+            if v is not None and not _is_zero_tile(v):
+                items.append(v)
+
+        write = L
+        read = 0
+        while read < len(items):
+            cur = items[read]
+
+            # Numbers: handle immediate next '*2' and classic merges
+            if _is_number_tile(cur):
+                nxt = items[read + 1] if read + 1 < len(items) else None
+
+                # If next is '*2' and star2 mode: consume both, double current
+                if _is_star2_tile(nxt) and options.get('star2', False):
+                    out[write] = cur * 2
+                    write += 1
+                    read += 2
+                    continue
+
+                # Classic-like merge with next equal number, except 1+1 when oneRule
+                if _is_number_tile(nxt):
+                    same = (cur == nxt)
+                    both_ones = (options.get('oneRule', False) and cur == 1 and nxt == 1)
+                    if same and not both_ones:
+                        out[write] = cur * 2
+                        write += 1
+                        read += 2
+                        continue
+
+                out[write] = cur
+                write += 1
+                read += 1
+                continue
+
+            # '*2' tiles never merge backward with the already placed front tile;
+            # they only act via the [number, '*2'] pattern handled above.
+            if _is_star2_tile(cur) and options.get('star2', False):
+                out[write] = cur
+                write += 1
+                read += 1
+                continue
+
+            # Fallback: place as-is
+            out[write] = cur
+            write += 1
+            read += 1
+
+    set_if_moved()
+    return {'row': out, 'moved': moved}
+def _adv_move_left_classic(grid):
+    n = len(grid)
+    out = []
+    moved = False
+    for r in range(n):
+        before = grid[r]
+        nums_only = [v if _is_number_tile(v) else None for v in before]
+        after = _adv_merge_row_left_classic(nums_only)
+        out.append(after)
+        if not moved and any(before[c] != after[c] for c in range(n)):
+            moved = True
+    return {'grid': out, 'moved': moved}
+
+def _adv_move_left_advanced(grid, options):
+    n = len(grid)
+    out = []
+    moved_flag = False
+    for r in range(n):
+        res = _adv_move_row_left_advanced(grid[r], options)
+        out.append(res['row'])
+        moved_flag = moved_flag or res['moved']
+    return {'grid': out, 'moved': moved_flag}
+
+def _adv_apply_move(grid, direction, mode_options):
+    if direction == 'LEFT':
+        times_in, times_out = 0, 0
+    elif direction == 'UP':
+        times_in, times_out = 3, 1
+    elif direction == 'RIGHT':
+        times_in, times_out = 2, 2
+    elif direction == 'DOWN':
+        times_in, times_out = 1, 3
+    else:
+        raise ValueError('Invalid direction')
+
+    rotated = _adv_rotate_times(grid, times_in)
+    if mode_options.get('classicOnly', False):
+        moved = _adv_move_left_classic(rotated)
+    else:
+        moved = _adv_move_left_advanced(rotated, mode_options)
+    restored = _adv_rotate_times(moved['grid'], times_out)
+    return {'grid': restored, 'moved': moved['moved']}
+
+def _adv_any_moves_available_advanced(grid, options):
+    for d in ('LEFT', 'RIGHT', 'UP', 'DOWN'):
+        res = _adv_apply_move(grid, d, options)
+        if res['moved']:
+            return True
+    return False
+
+def _adv_get_mode_options(mode):
+    m = (mode or 'classic').lower()
+    if m == 'classic':
+        return {'classicOnly': True}
+    if m == 'bigger':
+        return {'classicOnly': True}
+    if m == 'zero':
+        return {'classicOnly': False, 'zeroBlocks': True, 'star2': False, 'oneRule': False}
+    if m == 'star2':
+        return {'classicOnly': False, 'zeroBlocks': False, 'star2': True, 'oneRule': False}
+    if m == 'all':
+        return {'classicOnly': False, 'zeroBlocks': True, 'star2': True, 'oneRule': True}
+    return {'classicOnly': True}
 
 if __name__ == "__main__":
     # For local development only
-    app.run()
-    # app.run(host='0.0.0.0', port=3000, debug=False)
+    # app.run()
+    app.run(host='0.0.0.0', port=3000, debug=False)

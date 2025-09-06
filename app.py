@@ -401,6 +401,8 @@ def find_extra_channels(connections):
 @app.route("/investigate", methods=["POST"])
 def investigate():
     data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"networks": []}), 200
     networks_data = data.get("networks", [])
     if isinstance(networks_data, dict):
         networks_data = [networks_data]

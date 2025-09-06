@@ -303,14 +303,23 @@ def find_extra_channels(network: List[Dict[str, str]]) -> List[Dict[str, str]]:
     # Build adjacency list and edge list
     graph = defaultdict(set)
     edges = []
+    edge_to_connection_info = {}  # Map edges to (original_connection, node1, node2)
     
     for connection in network:
-        spy1 = connection.get("spy1")
-        spy2 = connection.get("spy2")
-        if spy1 and spy2 and spy1 != spy2:
-            graph[spy1].add(spy2)
-            graph[spy2].add(spy1)
-            edges.append((spy1, spy2))
+        # Get all node values from the connection
+        nodes = [v for v in connection.values() if v]
+        
+        # Create edges between all pairs of nodes in this connection
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                node1, node2 = nodes[i], nodes[j]
+                if node1 != node2:
+                    graph[node1].add(node2)
+                    graph[node2].add(node1)
+                    edge = (node1, node2)
+                    edges.append(edge)
+                    # Store connection info for this edge
+                    edge_to_connection_info[edge] = (connection, node1, node2)
     
     if not graph:
         return []
@@ -354,9 +363,25 @@ def find_extra_channels(network: List[Dict[str, str]]) -> List[Dict[str, str]]:
     
     # Find all edges that can be safely removed
     extra_channels = []
-    for spy1, spy2 in edges:
-        if is_connected_without_edge(edges, (spy1, spy2)):
-            extra_channels.append({"spy1": spy1, "spy2": spy2})
+    for edge in edges:
+        if is_connected_without_edge(edges, edge):
+            original_connection, node1, node2 = edge_to_connection_info[edge]
+            
+            # Create a new connection with all original keys but only the two nodes from this edge
+            new_connection = {}
+            for key in original_connection.keys():
+                new_connection[key] = None  # Initialize with None
+            
+            # Find which keys correspond to node1 and node2
+            keys_assigned = 0
+            for key, value in original_connection.items():
+                if value == node1 or value == node2:
+                    new_connection[key] = value
+                    keys_assigned += 1
+                    if keys_assigned == 2:
+                        break
+            
+            extra_channels.append(new_connection)
     
     return extra_channels
 

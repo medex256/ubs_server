@@ -16,6 +16,7 @@ except Exception:
     from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
 from collections import defaultdict, deque, Counter
 import re, math
+import json
 
 app = Flask(__name__)
 
@@ -709,19 +710,42 @@ def _extra_channels(edges: List[Dict[str, str]]) -> List[Dict[str, str]]:
 @app.post("/investigate")
 def investigate():
     payload = request.get_json(force=True, silent=True) or {}
+    if payload is None:
+        try:
+            raw = (request.data or b"").decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+        except Exception:
+            payload = {}
     networks_input: List[Dict] = payload.get("networks", [])
 
-    result_networks: List[Dict] = []
-    for network_entry in networks_input:
-        network_id = network_entry.get("networkId")
-        edges: List[Dict[str, str]] = network_entry.get("network", [])
-        extra = _extra_channels(edges)
+    if isinstance(payload, dict) and "body" in payload and isinstance(payload["body"], str):
+        try:
+            payload = json.loads(payload["body"])
+        except Exception:
+            payload = {}
+
+    networks_input = payload.get("networks", []) if isinstance(payload, dict) else []
+
+    result_networks = []
+    for entry in networks_input if isinstance(networks_input, list) else []:
+        # Accept multiple id field names; always return as networkId
+        network_id = (
+            entry.get("networkId")
+            or entry.get("id")
+            or entry.get("network_id")
+            or entry.get("uuid")
+        )
+
+        edges = entry.get("network", [])
+        extra = _extra_channels(edges if isinstance(edges, list) else [])
+
         result_networks.append({
             "networkId": network_id,
             "extraChannels": extra,
         })
-
-    return jsonify({"networks": result_networks})
+    resp = make_response(jsonify({"networks": result_networks}), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
 
 
 @app.route("/")

@@ -2375,9 +2375,6 @@ def _adv_get_mode_options(mode):
         return {'classicOnly': False, 'zeroBlocks': True, 'star2': True, 'oneRule': True}
     return {'classicOnly': True}
 
-if __name__ == "__main__":
-    # For local development only
-    app.run()
 
 if __name__ == "__main__":
     # For local development only

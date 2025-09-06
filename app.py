@@ -4,11 +4,19 @@ from typing import Any, Dict, List, Tuple, Optional, Set
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
-from collections import defaultdict, deque
+try:
+    # When running as a package: `python -m ubs_server.app` or `flask run` with APP=ubs_server.app
+    from .utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
+except Exception:
+    # When running directly: `python app.py`
+    from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
+from collections import defaultdict, deque, Counter
 import re, math
-import time
 
 app = Flask(__name__)
+
+# Import numeral helpers from utils
+# from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
 app.config['JSON_SORT_KEYS'] = False
 app.json.sort_keys = False
 
@@ -391,8 +399,6 @@ def ticketing_agent():
     resp.headers["Content-Type"] = "application/json"
     return resp
 
-
-
 def find_extra_channels(connections):
     """
     Return edges that can be removed without increasing the number of connected components.
@@ -502,15 +508,19 @@ def investigate():
         data = request.get_json(force=True, silent=True)
     except Exception:
         data = None
-
+        
     if isinstance(data, dict):
-        networks_data = data.get("networks", [])
+        if "networks" in data and isinstance(data["networks"], list):
+            networks_data = data["networks"]
+        elif "networkId" in data:
+            networks_data = [data]
+        else:
+            networks_data = []
     elif isinstance(data, list):
         networks_data = data
     else:
         networks_data = []
 
-    networks_data = data.get("networks", [])
     if isinstance(networks_data, dict):
         # Convert single object to list (fixes common API usage error)
         networks_data = [networks_data]
@@ -557,6 +567,7 @@ def investigate():
 @app.route("/")
 def root():
     return "OK", 200
+
 
 
 @app.route("/princess-diaries", methods=["POST"])
@@ -790,8 +801,7 @@ def trading_formula():
         return s
 
     def latex_to_python(expr: str) -> str:
-        # Robust conversion of a LaTeX-like expression to a safe Python expression.
-        s = expr or ''
+        s = expr
         s = replace_text_commands(s)
         s = replace_times_dot(s)
         s = remove_latex_wrappers(s)
@@ -801,55 +811,34 @@ def trading_formula():
         s = replace_latex_commands(s)
         s = replace_subscripts_and_brackets(s)
         s = replace_superscripts(s)
-
-        # Remove $ markers and normalize braces
+        s = s.replace('\\log', 'log')
+        # remove $ signs
         s = s.replace('$', '')
+        # normalize braces to parentheses for any remaining groups
         s = s.replace('{', '(').replace('}', ')')
+        # collapse multiple spaces
+        s = re.sub(r'\s+', ' ', s)
+        s = s.strip()
 
-        # Normalize unicode minus signs to ASCII
-        s = s.replace('\u2212', '-')
-        s = s.replace('−', '-')
+        # Insert implied multiplication where LaTeX omits the '*', e.g.:
+        #   beta_i (E_R_m - R_f) -> beta_i*(E_R_m - R_f)
+        #   2x -> 2*x
+        #   )( -> )*(
+        def insert_implied_multiplication(t: str) -> str:
+            # Insert '*' at the opening bracket after a number or closing bracket
+            t = re.sub(r'(?<=[0-9\)])\s*(?=\()', '*', t)
+            # Insert '*' when an identifier is followed by whitespace then '('
+            # Don't insert between a function name and '(' e.g. max()
+            t = re.sub(r'([A-Za-z_][A-Za-z0-9_]*)\s+\(', r'\1*(', t)
+            # Insert '*' between a number and identifier/underscore
+            t = re.sub(r'(?<=[0-9\.])\s*(?=[A-Za-z_])', '*', t)
+            # Insert '*' at the closing bracket before an identifier
+            t = re.sub(r'(?<=\))\s*(?=[A-Za-z_0-9])', '*', t)
+            return t
 
-        # Remove thousands separators: 1,000 -> 1000
-        s = re.sub(r'(?<=\d),(?=\d)', '', s)
-
-        # Convert percentages: 3% -> (3/100)
-        s = re.sub(r'(?P<num>\d+(?:\.\d+)?)\s*(?:\\%|%)', lambda m: f'(({m.group("num")})/100)', s)
-
-        # Absolute value bars: |x| -> abs(x)
-        prev = None
-        while prev != s:
-            prev = s
-            s = re.sub(r'\|([^|]+)\|', r'abs(\1)', s)
-
-        # Collapse whitespace
-        s = re.sub(r'\s+', ' ', s).strip()
-
-        # Implied multiplication insertion but avoid breaking function calls like max( or sin(
-        known_funcs = {
-            'max','min','sum','exp','log','log10','pow','abs','round',
-            'sin','cos','tan','sqrt','floor','ceil'
-        }
-
-        def _func_replace(m):
-            name = m.group(1)
-            # If this looks like a known function call (no space originally), do not insert '*'
-            if name in known_funcs:
-                return name + '('
-            return name + '*('
-
-        # Insert '*' when identifier is followed by SPACE then '(': 'x (' -> 'x*('
-        s = re.sub(r'([A-Za-z_][A-Za-z0-9_]*)\s+\(', _func_replace, s)
-        # Insert '*' when number or ')' directly before '(': '2(' or ')(' -> '2*(' or ')*('
-        s = re.sub(r'(?<=[0-9\)])\s*(?=\()', '*', s)
-        # Insert '*' between number and identifier: '2x' -> '2*x'
-        s = re.sub(r'(?<=[0-9\.])\s*(?=[A-Za-z_])', '*', s)
-        # Insert '*' between ')' and identifier/number: ')x' -> ')*x'
-        s = re.sub(r'(?<=\))\s*(?=[A-Za-z_0-9])', '*', s)
-
+        s = insert_implied_multiplication(s)
         return s
 
-    # Expanded safe functions and constants
     safe_funcs = {
         'exp': math.exp,
         'log': math.log,
@@ -859,14 +848,6 @@ def trading_formula():
         'sum': sum,
         'pow': pow,
         'abs': abs,
-        'round': round,
-        'sqrt': math.sqrt,
-        'sin': math.sin,
-        'cos': math.cos,
-        'tan': math.tan,
-        'floor': math.floor,
-        'ceil': math.ceil,
-        'pi': math.pi,
         'e': math.e,
     }
 
@@ -886,34 +867,27 @@ def trading_formula():
 
             py = latex_to_python(rhs)
 
-            # Prepare local environment with provided variables
             local_env = {}
             for k, v in variables.items():
-                key = str(k)
-                # normalize numeric-like strings
                 try:
-                    val = float(v)
+                    local_env[str(k)] = float(v)
                 except Exception:
-                    val = v
-                # base key
-                if key not in local_env:
-                    local_env[key] = val
-                # sanitized variants
-                vk = key.replace('[', '_').replace(']', '').replace(' ', '_')
-                vk2 = re.sub(r'[^0-9A-Za-z_]', '_', key)
-                vk3 = vk2.lower()
-                for sk in (vk, vk2, vk3):
-                    if sk and sk not in local_env:
-                        local_env[sk] = val
+                    local_env[str(k)] = v
 
-            # Merge safe funcs without overwriting variables
-            for fname, fobj in safe_funcs.items():
-                if fname not in local_env:
-                    local_env[fname] = fobj
+            sanitized = {}
+            for k in list(local_env.keys()):
+                sk = k.replace('[', '_').replace(']', '').replace(' ', '_')
+                if sk != k and sk not in local_env:
+                    sanitized[sk] = local_env[k]
+            local_env.update(sanitized)
+
+            local_env.update(safe_funcs)
 
             # Evaluate expression in restricted environment
             value = eval(py, {'__builtins__': None}, local_env)
-            results.append({'result': round(float(value), 4)})
+
+            valf = float(value)
+            results.append({'result': round(valf, 4)})
         except Exception:
             results.append({'result': None})
 
@@ -1388,6 +1362,63 @@ def fog_of_wall():
     resp = make_response(jsonify(response), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
+
+@app.route("/duolingo-sort", methods=["POST"]) 
+def duolingo_sort():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return bad_request("Invalid JSON body.")
+
+    part = data.get("part")
+    challenge_input = data.get("challengeInput", {})
+    if part not in ("ONE", "TWO") or not isinstance(challenge_input, dict):
+        return bad_request("Invalid input format.")
+
+    unsorted_list = challenge_input.get("unsortedList")
+    if not isinstance(unsorted_list, list):
+        return bad_request("Invalid input: unsortedList must be a list of strings.")
+
+    if part == "ONE":
+        values: List[int] = []
+        for s in unsorted_list:
+            if not isinstance(s, str):
+                return bad_request("All elements must be strings for part ONE.")
+            raw = s.strip()
+            v: Optional[int] = None
+            if re.fullmatch(r"\d+", raw):
+                try:
+                    v = int(raw)
+                except Exception:
+                    v = None
+            else:
+                v = roman_to_int(raw)
+            if v is None:
+                return bad_request("Unable to parse number.", details={"value": s})
+            values.append(v)
+        values.sort()
+        return jsonify({"sortedList": [str(x) for x in values]}), 200
+
+    # part TWO
+    ranked_items: List[Tuple[int, str, str, int]] = []  # (value, rep, original, index)
+    for idx, s in enumerate(unsorted_list):
+        if not isinstance(s, str):
+            return bad_request("All elements must be strings for part TWO.")
+        rep, val = classify_representation(s)
+        if val is None:
+            return bad_request("Unable to parse number.", details={"value": s})
+        ranked_items.append((val, rep, s, idx))
+
+    rep_rank = {
+        'ROMAN': 0,
+        'ENGLISH': 1,
+        'TRAD_CH': 2,
+        'SIMP_CH': 3,
+        'GERMAN': 4,
+        'ARABIC': 5
+    }
+
+    ranked_items.sort(key=lambda x: (x[0], rep_rank.get(x[1], 6), x[3]))
+    return jsonify({"sortedList": [it[2] for it in ranked_items]}), 200
    
 if __name__ == "__main__":
     # For local development only

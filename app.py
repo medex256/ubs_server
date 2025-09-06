@@ -38,10 +38,13 @@ def sailing_club_submission():
                 try:
                     s = int(pair[0])
                     e = int(pair[1])
-                except Exception:
+                    # Only accept valid intervals with positive duration
+                    # Also check bounds: 0 <= hours <= 4096
+                    if s < e and 0 <= s <= 4096 and 0 <= e <= 4096:
+                        valid.append([s, e])
+                except (ValueError, TypeError, OverflowError):
+                    # Skip invalid numeric values
                     continue
-                if s < e:
-                    valid.append([s, e])
         return valid
 
     def merge_slots(slots):
@@ -80,15 +83,16 @@ def sailing_club_submission():
         if not isinstance(case, dict):
             continue
         cid = case.get("id")
-        if cid is None:
-            # Skip cases without id as they won't be scored
-            continue
+        # Always process every test case, even if id is missing/invalid
+        # Convert id to string, handling None, 0, empty string, etc.
+        case_id = str(cid) if cid is not None else ""
+        
         raw_slots = case.get("input", [])
         slots = parse_slots(raw_slots)
         merged = merge_slots(slots)
         boats = min_boats(slots)
         solutions.append({
-            "id": str(cid),
+            "id": case_id,
             "sortedMergedSlots": merged,
             "minBoatsNeeded": boats,
         })

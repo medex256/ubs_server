@@ -303,23 +303,14 @@ def find_extra_channels(network: List[Dict[str, str]]) -> List[Dict[str, str]]:
     # Build adjacency list and edge list
     graph = defaultdict(set)
     edges = []
-    edge_to_connection_info = {}  # Map edges to (original_connection, node1, node2)
     
     for connection in network:
-        # Get all node values from the connection
-        nodes = [v for v in connection.values() if v]
-        
-        # Create edges between all pairs of nodes in this connection
-        for i in range(len(nodes)):
-            for j in range(i + 1, len(nodes)):
-                node1, node2 = nodes[i], nodes[j]
-                if node1 != node2:
-                    graph[node1].add(node2)
-                    graph[node2].add(node1)
-                    edge = (node1, node2)
-                    edges.append(edge)
-                    # Store connection info for this edge
-                    edge_to_connection_info[edge] = (connection, node1, node2)
+        spy1 = connection.get("spy1")
+        spy2 = connection.get("spy2")
+        if spy1 and spy2 and spy1 != spy2:
+            graph[spy1].add(spy2)
+            graph[spy2].add(spy1)
+            edges.append((spy1, spy2))
     
     if not graph:
         return []
@@ -363,25 +354,9 @@ def find_extra_channels(network: List[Dict[str, str]]) -> List[Dict[str, str]]:
     
     # Find all edges that can be safely removed
     extra_channels = []
-    for edge in edges:
-        if is_connected_without_edge(edges, edge):
-            original_connection, node1, node2 = edge_to_connection_info[edge]
-            
-            # Create a new connection with all original keys but only the two nodes from this edge
-            new_connection = {}
-            for key in original_connection.keys():
-                new_connection[key] = None  # Initialize with None
-            
-            # Find which keys correspond to node1 and node2
-            keys_assigned = 0
-            for key, value in original_connection.items():
-                if value == node1 or value == node2:
-                    new_connection[key] = value
-                    keys_assigned += 1
-                    if keys_assigned == 2:
-                        break
-            
-            extra_channels.append(new_connection)
+    for spy1, spy2 in edges:
+        if is_connected_without_edge(edges, (spy1, spy2)):
+            extra_channels.append({"spy1": spy1, "spy2": spy2})
     
     return extra_channels
 
@@ -583,20 +558,20 @@ def trading_formula():
     results = []
 
     def replace_text_commands(s: str) -> str:
+        # Replace \text{VAR} with VAR
         return re.sub(r'\\text\{([^}]+)\}', lambda m: m.group(1).strip(), s)
 
     def replace_times_dot(s: str) -> str:
         return s.replace('\\times', '*').replace('\\cdot', '*')
 
     def remove_latex_wrappers(s: str) -> str:
-        s = re.sub(r'\\left[\(\[\{]', '', s)
-        s = re.sub(r'\\right[\)\]\}]', '', s)
+        s = s.replace('\\left', '').replace('\\right', '')
         s = s.replace('\\,', '').replace('\\;', '').replace('\\ ', '')
         return s
 
     def replace_frac(s: str) -> str:
+        # recursively replace simple \frac{a}{b}
         pattern = re.compile(r'\\frac\s*{([^{}]+)}\s*{([^{}]+)}')
-        # Recursively replace until no occurrence remains
         while True:
             m = pattern.search(s)
             if not m:
@@ -607,38 +582,53 @@ def trading_formula():
         return s
 
     def replace_superscripts(s: str) -> str:
+        # replace {...}^{...} or ^{...}
         s = re.sub(r'\^\{([^}]+)\}', r'**(\1)', s)
+        # single char superscripts like x^2
         s = re.sub(r'([A-Za-z0-9_\)\]])\^([A-Za-z0-9_\(])', r'\1**\2', s)
         return s
 
     def replace_exp_e(s: str) -> str:
-        s = re.sub(r'(\\mathrm\{e\}|e)\^\{([^}]+)\}', r'exp(\2)', s)
+        # e^{x} or \mathrm{e}^{x} -> exp(x)
+        s = re.sub(r'e\^\{([^}]+)\}', r'exp(\1)', s)
+        s = re.sub(r'\\mathrm\{e\}\^\{([^}]+)\}', r'exp(\1)', s)
         return s
 
     def replace_summation(s: str) -> str:
-        pattern = re.compile(r'\\sum_{(\w+)=(.+?)}\^\{(.+?)\}\s*(?:\{([^}]+)\}|([^\s]+))')
+        # handle \sum_{i=START}^{END}{BODY} or without braces for BODY
+        pattern = re.compile(r'\\sum_{(\w+)=(.+?)}\^\{(.+?)\}\s*\{([^}]+)\}')
         def _repl(m):
             idx = m.group(1)
             start = m.group(2)
             end = m.group(3)
-            body = m.group(4) if m.group(4) is not None else m.group(5)
+            body = m.group(4)
             return f"(sum(({body}) for {idx} in range(int(({start})), int(({end}))+1)))"
         s = pattern.sub(_repl, s)
+        pattern2 = re.compile(r'\\sum_{(\w+)=(.+?)}\^\{(.+?)\}\s*([^\\\s]+)')
+        s = pattern2.sub(_repl, s)
         return s
 
     def replace_latex_commands(s: str) -> str:
-        greek = ['alpha','beta','gamma','delta','epsilon','zeta','eta','theta','iota',
-                 'kappa','lambda','mu','nu','xi','omicron','pi','rho','sigma','tau',
-                 'upsilon','phi','chi','psi','omega']
+        # Map common Greek letters and remove backslashes on commands
+        greek = ['alpha','beta','gamma','delta','epsilon','zeta','eta','theta','iota','kappa','lambda',
+                 'mu','nu','xi','omicron','pi','rho','sigma','tau','upsilon','phi','chi','psi','omega']
         for g in greek:
-            s = s.replace(f'\\{g}', g)
-        
+            s = s.replace('\\' + g, g)
+
+        # Common function names
         s = s.replace('\\max', 'max').replace('\\min', 'min').replace('\\log', 'log').replace('\\exp', 'exp')
+
+        # Remove other backslashes from simple commands (e.g. \beta -> beta)
         s = re.sub(r'\\([A-Za-z]+)', r'\1', s)
         return s
 
     def replace_subscripts_and_brackets(s: str) -> str:
+        # Convert _{...} -> _... and _x -> _x (keep underscore for python identifiers)
+        s = re.sub(r'_|\u2019', '_', s)  
         s = re.sub(r'_\{([^}]+)\}', lambda m: '_' + re.sub(r'\s+', '_', m.group(1)), s)
+        s = re.sub(r'_([A-Za-z0-9])', r'_\1', s)
+
+        # Convert bracketed notation A[B] -> A_B (iteratively)
         prev = None
         while prev != s:
             prev = s
@@ -646,7 +636,8 @@ def trading_formula():
         return s
 
     def latex_to_python(expr: str) -> str:
-        s = expr
+        # Robust conversion of a LaTeX-like expression to a safe Python expression.
+        s = expr or ''
         s = replace_text_commands(s)
         s = replace_times_dot(s)
         s = remove_latex_wrappers(s)
@@ -657,53 +648,54 @@ def trading_formula():
         s = replace_subscripts_and_brackets(s)
         s = replace_superscripts(s)
 
-        # remove $ signs
+        # Remove $ markers and normalize braces
         s = s.replace('$', '')
-        # normalize braces to parentheses for any remaining groups
         s = s.replace('{', '(').replace('}', ')')
 
-        # normalize unicode minus to ascii
+        # Normalize unicode minus signs to ASCII
         s = s.replace('\u2212', '-')
         s = s.replace('−', '-')
 
-        # remove thousands separators like 1,000 -> 1000
+        # Remove thousands separators: 1,000 -> 1000
         s = re.sub(r'(?<=\d),(?=\d)', '', s)
 
-        # convert percentages (e.g. 3% or 3\%) -> (3/100)
+        # Convert percentages: 3% -> (3/100)
         s = re.sub(r'(?P<num>\d+(?:\.\d+)?)\s*(?:\\%|%)', lambda m: f'(({m.group("num")})/100)', s)
 
-        # absolute value bars |x| -> abs(x) (iteratively)
+        # Absolute value bars: |x| -> abs(x)
         prev = None
         while prev != s:
             prev = s
             s = re.sub(r'\|([^|]+)\|', r'abs(\1)', s)
 
-        # collapse multiple spaces
+        # Collapse whitespace
         s = re.sub(r'\s+', ' ', s).strip()
 
-        # Insert implied multiplication but avoid turning function calls into multiplication.
-        known_funcs = {'max','min','sum','exp','log','log10','pow','abs','sin','cos','tan','sqrt','floor','ceil'}
+        # Implied multiplication insertion but avoid breaking function calls like max( or sin(
+        known_funcs = {
+            'max','min','sum','exp','log','log10','pow','abs','round',
+            'sin','cos','tan','sqrt','floor','ceil'
+        }
 
         def _func_replace(m):
             name = m.group(1)
+            # If this looks like a known function call (no space originally), do not insert '*'
             if name in known_funcs:
                 return name + '('
             return name + '*('
 
-        # 1) identifier <space> (  -> identifier*(   (but not for known functions)
+        # Insert '*' when identifier is followed by SPACE then '(': 'x (' -> 'x*('
         s = re.sub(r'([A-Za-z_][A-Za-z0-9_]*)\s+\(', _func_replace, s)
-        # 2) number or closing-paren directly before (  -> insert * : 2( or )( -> 2*( and )*(
+        # Insert '*' when number or ')' directly before '(': '2(' or ')(' -> '2*(' or ')*('
         s = re.sub(r'(?<=[0-9\)])\s*(?=\()', '*', s)
-        # 3) number followed by identifier: 2x -> 2*x
+        # Insert '*' between number and identifier: '2x' -> '2*x'
         s = re.sub(r'(?<=[0-9\.])\s*(?=[A-Za-z_])', '*', s)
-        # 4) closing paren followed by identifier/number: )x -> )*x
+        # Insert '*' between ')' and identifier/number: ')x' -> ')*x'
         s = re.sub(r'(?<=\))\s*(?=[A-Za-z_0-9])', '*', s)
 
-        # final trim
-        s = s.strip()
         return s
 
-    # broaden safe funcs with math helpers
+    # Expanded safe functions and constants
     safe_funcs = {
         'exp': math.exp,
         'log': math.log,
@@ -713,10 +705,11 @@ def trading_formula():
         'sum': sum,
         'pow': pow,
         'abs': abs,
+        'round': round,
+        'sqrt': math.sqrt,
         'sin': math.sin,
         'cos': math.cos,
         'tan': math.tan,
-        'sqrt': math.sqrt,
         'floor': math.floor,
         'ceil': math.ceil,
         'pi': math.pi,
@@ -731,29 +724,41 @@ def trading_formula():
                 results.append({'result': None})
                 continue
 
+            # take RHS if formula contains =
             if '=' in formula:
                 rhs = formula.split('=', 1)[1]
             else:
                 rhs = formula
 
-            py_expr = latex_to_python(rhs)
+            py = latex_to_python(rhs)
 
+            # Prepare local environment with provided variables
             local_env = {}
             for k, v in variables.items():
+                key = str(k)
+                # normalize numeric-like strings
                 try:
-                    local_env[str(k)] = float(v)
+                    val = float(v)
                 except Exception:
-                    local_env[str(k)] = v
+                    val = v
+                # base key
+                if key not in local_env:
+                    local_env[key] = val
+                # sanitized variants
+                vk = key.replace('[', '_').replace(']', '').replace(' ', '_')
+                vk2 = re.sub(r'[^0-9A-Za-z_]', '_', key)
+                vk3 = vk2.lower()
+                for sk in (vk, vk2, vk3):
+                    if sk and sk not in local_env:
+                        local_env[sk] = val
 
-            sanitized = {}
-            for k in list(local_env.keys()):
-                sk = k.replace('[', '_').replace(']', '').replace(' ', '_')
-                if sk != k and sk not in local_env:
-                    sanitized[sk] = local_env[k]
-            local_env.update(sanitized)
-            local_env.update(safe_funcs)
+            # Merge safe funcs without overwriting variables
+            for fname, fobj in safe_funcs.items():
+                if fname not in local_env:
+                    local_env[fname] = fobj
 
-            value = eval(py_expr, {'__builtins__': None}, local_env)
+            # Evaluate expression in restricted environment
+            value = eval(py, {'__builtins__': None}, local_env)
             results.append({'result': round(float(value), 4)})
         except Exception:
             results.append({'result': None})

@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Tuple, Optional
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
+from typing import Any, Dict, List, Tuple, Optional, Set
+from collections import defaultdict, deque
 
 app = Flask(__name__)
 
@@ -286,6 +288,113 @@ def ticketing_agent():
             result_map[cname] = best_name
             
     resp = make_response(jsonify(result_map), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+
+def find_extra_channels(network: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Find extra channels that can be safely removed from a spy network.
+    The goal is to find ALL edges that can be individually removed while maintaining connectivity.
+    """
+    if not network:
+        return []
+    
+    # Build adjacency list and edge list
+    graph = defaultdict(set)
+    edges = []
+    
+    for connection in network:
+        spy1 = connection.get("spy1")
+        spy2 = connection.get("spy2")
+        if spy1 and spy2 and spy1 != spy2:
+            graph[spy1].add(spy2)
+            graph[spy2].add(spy1)
+            edges.append((spy1, spy2))
+    
+    if not graph:
+        return []
+    
+    # Find all nodes
+    all_nodes = set(graph.keys())
+    n_nodes = len(all_nodes)
+    
+    # We need at least (n_nodes - 1) edges to maintain connectivity
+    min_edges_needed = n_nodes - 1
+    
+    if len(edges) <= min_edges_needed:
+        return []  # No extra edges to remove
+    
+    def is_connected_without_edge(edges_to_test: List[Tuple[str, str]], exclude_edge: Tuple[str, str]) -> bool:
+        """Check if the graph remains connected when excluding a specific edge."""
+        # Build graph without the excluded edge
+        test_graph = defaultdict(set)
+        for spy1, spy2 in edges_to_test:
+            if (spy1, spy2) != exclude_edge and (spy2, spy1) != exclude_edge:
+                test_graph[spy1].add(spy2)
+                test_graph[spy2].add(spy1)
+        
+        if not test_graph:
+            return False
+        
+        # BFS to check connectivity
+        start_node = next(iter(test_graph.keys()))
+        visited = set()
+        queue = deque([start_node])
+        visited.add(start_node)
+        
+        while queue:
+            node = queue.popleft()
+            for neighbor in test_graph[node]:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        
+        return len(visited) == n_nodes
+    
+    # Find all edges that can be safely removed
+    extra_channels = []
+    for spy1, spy2 in edges:
+        if is_connected_without_edge(edges, (spy1, spy2)):
+            extra_channels.append({"spy1": spy1, "spy2": spy2})
+    
+    return extra_channels
+
+
+@app.route("/investigate", methods=["POST"])
+def investigate():
+    """
+    Analyze spy networks to find extra channels that can be safely removed.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        return bad_request("Invalid JSON body.")
+    
+    networks_data = data.get("networks", [])
+    if not isinstance(networks_data, list):
+        return bad_request("networks must be a list.")
+    
+    result_networks = []
+    
+    for network_data in networks_data:
+        if not isinstance(network_data, dict):
+            continue
+            
+        network_id = network_data.get("networkId")
+        network = network_data.get("network", [])
+        
+        if not network_id or not isinstance(network, list):
+            continue
+        
+        # Find extra channels for this network
+        extra_channels = find_extra_channels(network)
+        
+        result_networks.append({
+            "networkId": network_id,
+            "extraChannels": extra_channels
+        })
+    
+    resp = make_response(jsonify({"networks": result_networks}), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
 

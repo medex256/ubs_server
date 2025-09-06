@@ -21,6 +21,100 @@ def bad_request(message: str, details: Optional[Dict[str, Any]] = None, status_c
     return resp
 
 
+@app.route("/sailing-club", methods=["POST"])
+@app.route("/sailing-club/submission", methods=["POST"])
+def sailing_club_submission():
+    data = request.get_json(silent=True) or {}
+    test_cases = data.get("testCases", [])
+    if not isinstance(test_cases, list):
+        return bad_request("Expected 'testCases' to be a list.")
+
+    def parse_slots(slots_raw):
+        valid = []
+        if not isinstance(slots_raw, list):
+            return valid
+        for pair in slots_raw:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                try:
+                    s = int(pair[0])
+                    e = int(pair[1])
+                except Exception:
+                    continue
+                if s < e:
+                    valid.append([s, e])
+        return valid
+
+    def merge_slots(slots):
+        if not slots:
+            return []
+        slots.sort(key=lambda x: x[0])
+        merged = [slots[0][:]]
+        for s, e in slots[1:]:
+            ls, le = merged[-1]
+            if s <= le:
+                if e > le:
+                    merged[-1][1] = e
+            else:
+                merged.append([s, e])
+        return merged
+
+    def min_boats(slots):
+        if not slots:
+            return 0
+        events = []
+        for s, e in slots:
+            events.append((s, 1))
+            events.append((e, -1))
+        # End (-1) before start (+1) at the same time
+        events.sort(key=lambda t: (t[0], t[1]))
+        cur = 0
+        ans = 0
+        for _, d in events:
+            cur += d
+            if cur > ans:
+                ans = cur
+        return ans
+
+    solutions = []
+    for case in test_cases:
+        if not isinstance(case, dict):
+            continue
+        cid = case.get("id")
+        if cid is None:
+            # Skip cases without id as they won't be scored
+            continue
+        raw_slots = case.get("input", [])
+        slots = parse_slots(raw_slots)
+        merged = merge_slots(slots)
+        boats = min_boats(slots)
+        solutions.append({
+            "id": str(cid),
+            "sortedMergedSlots": merged,
+            "minBoatsNeeded": boats,
+        })
+
+    resp = make_response(jsonify({"solutions": solutions}), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+@app.errorhandler(404)
+def handle_404(e):
+    resp = make_response(jsonify({"error": "Not Found"}), 404)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+@app.errorhandler(405)
+def handle_405(e):
+    resp = make_response(jsonify({"error": "Method Not Allowed"}), 405)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+@app.errorhandler(500)
+def handle_500(e):
+    resp = make_response(jsonify({"error": "Internal Server Error"}), 500)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
 def parse_float(value: Any) -> Optional[float]:
     try:
         if isinstance(value, (int, float)):
@@ -195,16 +289,16 @@ def blankety():
 def trivia():
     res = {
         "answers": [
-            3,  # zhb  "Trivia!": How many challenges are there this year, which title ends with an exclamation mark?
-            1,  # "Ticketing Agent": What type of tickets is the ticketing agent handling?
-            2,  # "Blankety Blanks": How many lists and elements per list are included in the dataset you must impute?
-            2,  # "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?
+            3,  # zhb "Trivia!": How many challenges are there this year, which title ends with an exclamation mark?
+            1,  # zhb "Ticketing Agent": What type of tickets is the ticketing agent handling?
+            2,  # zhb "Blankety Blanks": How many lists and elements per list are included in the dataset you must impute?
+            2,  # zhb "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?
             3,  # "MST Calculation": What is the average number of nodes in a test case?
             4,  # zhb "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
             3,  # "Operation Safeguard": What is the smallest font size in our question?
             4,  # "Capture The Flag": Which of these are anagrams of the challenge name?
             4,  # zhb "Filler 1": Where has UBS Global Coding Challenge been held before?
-            3 #zhb
+            3   # zhb
         ]
     }
     return jsonify(res), 200
@@ -415,139 +509,38 @@ def investigate():
 
     networks_data = data.get("networks", [])
     if isinstance(networks_data, dict):
+        # Convert single object to list (fixes common API usage error)
         networks_data = [networks_data]
     if not isinstance(networks_data, list):
         networks_data = []
 
-    def _normalize_edge(edge):
-        # Returns a tuple (u, v) or None if unrecognized
-        if isinstance(edge, (list, tuple)) and len(edge) == 2:
-            return edge[0], edge[1]
-        if isinstance(edge, dict):
-            candidates = [
-                ("from", "to"), ("source", "target"),
-                ("u", "v"), ("a", "b"),
-                ("node1", "node2"), ("x", "y"),
-                ("spy1", "spy2")
-            ]
-            for k1, k2 in candidates:
-                if k1 in edge and k2 in edge:
-                    return edge[k1], edge[k2]
-        return None
-
-    class DSU:
-        def __init__(self):
-            self.parent = {}
-            self.rank = {}
-        def find(self, x):
-            if x not in self.parent:
-                self.parent[x] = x
-                self.rank[x] = 0
-                return x
-            # Path compression
-            while self.parent[x] != x:
-                self.parent[x] = self.parent[self.parent[x]]
-                x = self.parent[x]
-            return x
-        def union(self, x, y):
-            rx, ry = self.find(x), self.find(y)
-            if rx == ry:
-                return False  # union would create a cycle
-            if self.rank[rx] < self.rank[ry]:
-                self.parent[rx] = ry
-            elif self.rank[rx] > self.rank[ry]:
-                self.parent[ry] = rx
-            else:
-                self.parent[ry] = rx
-                self.rank[rx] += 1
-            return True
-
     result_networks = []
+    
+    # Process each network in the request
     for item in networks_data:
         if not isinstance(item, dict):
             continue
+
+        # CRITICAL FIX: Get networkId and preserve it exactly as is
         network_id = item.get("networkId")
+        
+        # Skip items without a networkId
         if network_id is None:
             continue
 
-        edges = item.get("network", [])
-        if not isinstance(edges, list):
-            edges = []
+        # Get network edges
+        network_edges = item.get("network", [])
+        if not isinstance(network_edges, list):
+            network_edges = []
 
-        # First pass: build a spanning forest, tracking which edges are used
-        dsu = DSU()
-        included_flags = [False] * len(edges)
-        normalized = [None] * len(edges)
-        for i, edge in enumerate(edges):
-            norm = _normalize_edge(edge)
-            normalized[i] = norm
-            if norm is None:
-                continue
-            u, v = norm
-            if dsu.union(u, v):
-                # Edge connects two different components; keep it in the forest
-                included_flags[i] = True
+        # Find extra channels
+        try:
+            extra_channels = find_extra_channels(network_edges)
+        except Exception:
+            # Fallback: return empty list if algorithm fails
+            extra_channels = []
 
-        # Build adjacency from included (tree) edges for path discovery
-        adjacency = {}
-        def add_adj(a, b):
-            adjacency.setdefault(a, set()).add(b)
-            adjacency.setdefault(b, set()).add(a)
-        for i, ok in enumerate(included_flags):
-            if ok and normalized[i] is not None:
-                u, v = normalized[i]
-                add_adj(u, v)
-
-        # For each non-included edge, mark all edges on the unique tree path between its endpoints
-        # plus the edge itself as being part of a cycle
-        cycle_edge_set = set()  # set of frozenset({u,v})
-
-        def path_edges(u, v):
-            # BFS to find path in the tree, returns list of edges (u_i, v_i)
-            if u not in adjacency or v not in adjacency:
-                return []
-            from collections import deque
-            q = deque([u])
-            parent = {u: None}
-            while q:
-                x = q.popleft()
-                if x == v:
-                    break
-                for y in adjacency.get(x, []):
-                    if y not in parent:
-                        parent[y] = x
-                        q.append(y)
-            if v not in parent:
-                return []
-            # Reconstruct edges along path v -> u
-            edges_on_path = []
-            curr = v
-            while parent[curr] is not None:
-                p = parent[curr]
-                edges_on_path.append((p, curr))
-                curr = p
-            return edges_on_path
-
-        for i, edge in enumerate(edges):
-            if normalized[i] is None:
-                continue
-            if not included_flags[i]:
-                u, v = normalized[i]
-                # mark the non-tree edge itself
-                cycle_edge_set.add(frozenset((u, v)))
-                # mark the tree path between u and v
-                for a, b in path_edges(u, v):
-                    cycle_edge_set.add(frozenset((a, b)))
-
-        # Collect original edges whose endpoints lie on any detected cycle
-        extra_channels = []
-        for i, edge in enumerate(edges):
-            norm = normalized[i]
-            if norm is None:
-                continue
-            if frozenset(norm) in cycle_edge_set:
-                extra_channels.append(edge)
-
+        # Build response with exact same networkId
         result_networks.append({
             "networkId": network_id,
             "extraChannels": extra_channels
@@ -556,6 +549,7 @@ def investigate():
     resp = make_response(jsonify({"networks": result_networks}), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
+
 
 @app.route("/")
 def root():
@@ -1060,15 +1054,6 @@ def _process_previous_action(state: Dict[str, Any], previous_action: Dict[str, A
         scan_result = previous_action.get("scan_result")
         if isinstance(scan_result, list) and len(scan_result) == 5:
             _integrate_scan(state, crow_id, scan_result)
-    
-    # Update stagnation tracking
-    known_cells_now = len(state.get("known_empty", set())) + len(state.get("known_walls", set()))
-    last_known_cells = state.get("last_known_cells", 0)
-    if known_cells_now > last_known_cells:
-        state["stagnation_steps"] = 0
-    else:
-        state["stagnation_steps"] = int(state.get("stagnation_steps", 0)) + 1
-    state["last_known_cells"] = known_cells_now
 
 def _bfs_first_step_direction(state: Dict[str, Any], start: Tuple[int, int]) -> Tuple[Dict[Tuple[int, int], str], Dict[Tuple[int, int], int]]:
     # BFS only through known empty cells
@@ -1117,7 +1102,6 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
     steps = state.get("steps", 0)
     elapsed = time.time() - state.get("start_time", time.time())
     aggressive = (elapsed > 24.0) or (steps >= int(0.9 * n * n))
-    stagnation = int(state.get("stagnation_steps", 0)) >= 6
     reservations: Dict[str, Tuple[int, int]] = state.setdefault("reservations", {})
     reservation_set_step: Dict[str, int] = state.setdefault("reservation_set_step", {})
     # Expire stale reservations or those already scanned
@@ -1149,7 +1133,7 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
             return {"action_type": "scan", "crow_id": best[1]}
 
     # Dynamic scan threshold based on remaining unknown area (lower in aggressive mode)
-    if aggressive or stagnation:
+    if aggressive:
         scan_threshold = 1
     elif unknown_cells > 0.6 * total_cells:
         scan_threshold = 6
@@ -1205,18 +1189,9 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
             state["known_empty"].add((sx, sy))
 
         first_dir, dist = _bfs_first_step_direction(state, (sx, sy))
-        # Evaluate reachable known-empty cells that are adjacent to unknowns (frontier-adjacent)
+        # Evaluate all reachable known-empty cells as potential scan centers
         for cell, d in dist.items():
             if cell in scanned_centers:
-                continue
-            # Require frontier adjacency: at least one neighbor unknown
-            cx, cy = cell
-            frontier_adjacent = False
-            for nx, ny, _dl in _neighbors4(cx, cy, n):
-                if (nx, ny) not in state["known_empty"] and (nx, ny) not in state["known_walls"]:
-                    frontier_adjacent = True
-                    break
-            if not frontier_adjacent and not aggressive:
                 continue
             gain = _scan_unknown_count_at(cell, n, state["known_empty"], state["known_walls"])
             if gain <= 0:
@@ -1285,7 +1260,7 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
     # 4) Lattice fallback: head towards an unscanned lattice center to cover edges/gaps
     # Generate coarse grid of centers
     lattice = []
-    stride = 3 if aggressive else 4
+    stride = 4
     for x in range(0, n, stride):
         for y in range(0, n, stride):
             lattice.append((x, y))

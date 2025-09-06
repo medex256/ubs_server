@@ -1,6 +1,10 @@
 from flask import Flask, request, jsonify, make_response
 from math import hypot
 from typing import Any, Dict, List, Tuple, Optional, Set
+import base64, io, time
+from PIL import Image
+import cv2
+import pytesseract
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
@@ -105,6 +109,231 @@ def sailing_club_submission():
         })
 
     resp = make_response(jsonify({"solutions": solutions}), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+
+# === MST CALCULATION ===
+
+def _decode_base64_image_to_bgr(encoded: str) -> Optional[np.ndarray]:
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        pil_img = Image.open(io.BytesIO(raw)).convert('RGB')
+        arr = np.array(pil_img)
+        # Convert RGB -> BGR for OpenCV
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
+
+
+def _detect_nodes_bgr(image_bgr: np.ndarray) -> List[Tuple[int, int]]:
+    # Nodes are black circles; detect dark blobs and take centroids
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    # Mask for dark pixels (black nodes). V low and S low helps ignore colored lines
+    dark_mask = cv2.inRange(hsv, (0, 0, 0), (180, 70, 110))
+    # Remove thin lines and noise, keep blobs
+    kernel = np.ones((5, 5), np.uint8)
+    dark_mask = cv2.medianBlur(dark_mask, 5)
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    centers: List[Tuple[int, int]] = []
+    areas = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 150 or area > 10000:
+            continue
+        M = cv2.moments(c)
+        if M['m00'] == 0:
+            continue
+        cx = int(M['m10'] / M['m00'])
+        cy = int(M['m01'] / M['m00'])
+        centers.append((cx, cy))
+        areas.append(area)
+
+    # Deduplicate very close centers (if multiple contours per circle)
+    merged: List[Tuple[int, int]] = []
+    for cx, cy in centers:
+        keep = True
+        for px, py in merged:
+            if hypot(cx - px, cy - py) < 12:
+                keep = False
+                break
+        if keep:
+            merged.append((cx, cy))
+    return merged
+
+
+def _is_colored_pixel(hsv_px: np.ndarray) -> bool:
+    # Strongly colored, bright pixel (exclude white/black/gray)
+    h, s, v = int(hsv_px[0]), int(hsv_px[1]), int(hsv_px[2])
+    return s >= 80 and v >= 80
+
+
+def _samples_along(a: Tuple[int, int], b: Tuple[int, int], n: int = 60, margin: float = 0.18):
+    ax, ay = a
+    bx, by = b
+    for i in range(n):
+        t = (i + 0.5) / n
+        t = margin + t * (1 - 2 * margin)
+        x = int(round(ax + (bx - ax) * t))
+        y = int(round(ay + (by - ay) * t))
+        yield (x, y)
+
+
+def _edge_exists_between(hsv: np.ndarray, a: Tuple[int, int], b: Tuple[int, int]) -> bool:
+    # Sample points along line; require good fraction colored
+    colored = 0
+    total = 0
+    for x, y in _samples_along(a, b):
+        if y < 0 or x < 0 or y >= hsv.shape[0] or x >= hsv.shape[1]:
+            continue
+        total += 1
+        px = hsv[y, x]
+        if _is_colored_pixel(px):
+            colored += 1
+    if total == 0:
+        return False
+    return (colored / total) >= 0.35
+
+
+def _ocr_weight_for_edge(image_bgr: np.ndarray, a: Tuple[int, int], b: Tuple[int, int]) -> Optional[int]:
+    # Crop around mid-point; choose window size proportional to length
+    mx = int(round((a[0] + b[0]) / 2))
+    my = int(round((a[1] + b[1]) / 2))
+    dist = int(max(30, hypot(b[0] - a[0], b[1] - a[1]) * 0.18))
+    x0 = max(0, mx - dist)
+    y0 = max(0, my - int(dist * 0.75))
+    x1 = min(image_bgr.shape[1], mx + dist)
+    y1 = min(image_bgr.shape[0], my + int(dist * 0.75))
+    crop = image_bgr[y0:y1, x0:x1]
+    if crop.size == 0:
+        return None
+
+    # Preprocess for OCR: convert to HSV, keep colored pixels, then to grayscale
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask_col = cv2.inRange(hsv, (0, 60, 60), (180, 255, 255))
+    # Clean and enhance
+    mask_col = cv2.medianBlur(mask_col, 3)
+    kernel = np.ones((3, 3), np.uint8)
+    mask_col = cv2.morphologyEx(mask_col, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask_col = cv2.morphologyEx(mask_col, cv2.MORPH_DILATE, kernel, iterations=1)
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # Emphasize digits where color mask is on
+    masked = cv2.bitwise_and(gray, gray, mask=mask_col)
+    # Adaptive threshold
+    thr = cv2.adaptiveThreshold(masked, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5)
+    inv = 255 - thr
+    try:
+        text = pytesseract.image_to_string(inv, config='--psm 7 -c tessedit_char_whitelist=0123456789').strip()
+    except Exception:
+        text = ''
+    # Keep only digits
+    text = re.sub(r'[^0-9]', '', text)
+    if text == '':
+        # Fallback: run OCR on original crop
+        try:
+            text2 = pytesseract.image_to_string(crop, config='--psm 7 -c tessedit_char_whitelist=0123456789').strip()
+            text2 = re.sub(r'[^0-9]', '', text2)
+            text = text2
+        except Exception:
+            pass
+    if text == '':
+        return None
+    try:
+        return int(text)
+    except Exception:
+        return None
+
+
+def _build_graph_from_image(image_bgr: np.ndarray) -> Tuple[int, List[Tuple[int, int, int]]]:
+    nodes = _detect_nodes_bgr(image_bgr)
+    n = len(nodes)
+    if n <= 1:
+        return 0, []
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+
+    edges: Dict[Tuple[int, int], int] = {}
+    for i in range(n):
+        for j in range(i + 1, n):
+            a = nodes[i]
+            b = nodes[j]
+            if not _edge_exists_between(hsv, a, b):
+                continue
+            w = _ocr_weight_for_edge(image_bgr, a, b)
+            if w is None:
+                continue
+            edges[(i, j)] = w
+    edge_list = [(i, j, w) for (i, j), w in edges.items()]
+    return n, edge_list
+
+
+def _mst_weight_kruskal(num_nodes: int, edges: List[Tuple[int, int, int]]) -> Optional[int]:
+    if num_nodes == 0:
+        return 0
+    parent = list(range(num_nodes))
+    rank = [0] * num_nodes
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> bool:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return False
+        if rank[ra] < rank[rb]:
+            parent[ra] = rb
+        elif rank[ra] > rank[rb]:
+            parent[rb] = ra
+        else:
+            parent[rb] = ra
+            rank[ra] += 1
+        return True
+
+    edges_sorted = sorted(edges, key=lambda x: x[2])
+    total = 0
+    used = 0
+    for u, v, w in edges_sorted:
+        if union(u, v):
+            total += int(w)
+            used += 1
+            if used == num_nodes - 1:
+                break
+    if used != max(0, num_nodes - 1):
+        return None
+    return total
+
+
+@app.route("/mst-calculation", methods=["POST"])
+def mst_calculation():
+    data = request.get_json(silent=True)
+    if not isinstance(data, list) or len(data) == 0:
+        return bad_request("Expected a JSON array of test cases, each with an 'image' field.")
+
+    results: List[Dict[str, Optional[int]]] = []
+    for case in data:
+        encoded = None
+        if isinstance(case, dict):
+            encoded = case.get("image")
+        if not isinstance(encoded, str) or len(encoded) == 0:
+            results.append({"value": None})
+            continue
+        img = _decode_base64_image_to_bgr(encoded)
+        if img is None:
+            results.append({"value": None})
+            continue
+        n, edges = _build_graph_from_image(img)
+        weight = _mst_weight_kruskal(n, edges)
+        if weight is None:
+            results.append({"value": None})
+        else:
+            results.append({"value": int(weight)})
+
+    resp = make_response(jsonify(results), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
 

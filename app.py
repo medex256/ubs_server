@@ -2676,12 +2676,17 @@ class TradingBot:
 
         o1_open  = self._p(obs[0],'open');
         o1_close = entry_close
+        o1_high  = self._p(obs[0],'high')
+        o1_low   = self._p(obs[0],'low')
         o2_close = self._p(obs[1],'close', o1_close) if len(obs)>1 else o1_close
         o3_close = self._p(obs[2],'close', o2_close) if len(obs)>2 else o2_close
 
-        gap   = self._pct(o1_open, prev_close)
-        init  = self._pct(o1_close, o1_open)
-        follow= self._pct(o3_close, o1_close)
+        gap    = self._pct(o1_open, prev_close)
+        init   = self._pct(o1_close, o1_open)
+        follow = self._pct(o3_close, o1_close)
+
+        # ATR % over last 6 candles (prev 3 + obs 3)
+        atr_pct = self._atr_pct((prev+obs)[-6:])
 
         vol1  = self._p(obs[0],'volume',1.0)
         volavg= np.mean([self._p(c,'volume',1.0) for c in prev[-3:]]) if prev else 1.0
@@ -2689,82 +2694,160 @@ class TradingBot:
 
         sent = self._sentiment(ev.get('title',''), ev.get('source',''))
 
-        # proximity flags
+        # proximity flags and candle anatomy
         near_res = abs(self._pct(o1_close, prev_high)) < 0.005
         near_sup = abs(self._pct(o1_close, prev_low))  < 0.005
+        rng = max(1e-12, o1_high - o1_low)
+        body = abs(o1_close - o1_open)
+        body_ratio = body / rng
+        upper_wick = (o1_high - max(o1_open, o1_close)) / rng
+        lower_wick = (min(o1_open, o1_close) - o1_low) / rng
+        is_green = o1_close > o1_open
 
-        decision='LONG'; conf=0.0
+        # Build signal ensemble (direction in {-1, +1}, strength [0..1], weight)
+        signals: List[Tuple[int, float, float]] = []
 
-        # ---------------- dynamic momentum vs mean-reversion ----------------
-        magnitude = abs(follow)  # 3-min drift strength
-        # threshold relative to ATR
-        if self._atr_pct(prev+obs)>0:
-            norm_move = magnitude/self._atr_pct(prev+obs)
+        # 1) Drift over obs window
+        drift_dir = 1 if follow>0 else -1 if follow<0 else 0
+        if drift_dir != 0:
+            drift_strength = min(1.0, abs(follow) / max(1e-6, 0.002 + atr_pct*0.5))
+            signals.append((drift_dir, drift_strength, 1.0))
+
+        # 2) Breakout relative to prev range
+        brk_up = self._pct(o1_close, prev_high)
+        brk_dn = self._pct(prev_low, o1_close)
+        if brk_up > 0.002:
+            signals.append((+1, min(1.0, brk_up*80), 0.9))
+        if brk_dn > 0.002:
+            signals.append((-1, min(1.0, brk_dn*80), 0.9))
+
+        # 3) Gap-reversal fade
+        if abs(gap) > 0.008 and ((gap>0 and follow<0) or (gap<0 and follow>0)):
+            signals.append((-1 if gap>0 else +1, min(1.0, abs(gap)*50 + abs(follow)*20), 0.8))
+
+        # 4) S/R bounce
+        if near_res and init < -0.002:
+            signals.append((-1, min(1.0, abs(init)*60), 0.6))
+        if near_sup and init > 0.002:
+            signals.append((+1, min(1.0, abs(init)*60), 0.6))
+
+        # 5) Candle anatomy
+        if body_ratio > 0.6:
+            signals.append(((+1 if is_green else -1), min(1.0, (body_ratio-0.6)/0.4), 0.5))
+        if upper_wick > 0.6:
+            signals.append((-1, min(1.0, (upper_wick-0.6)/0.4), 0.4))
+        if lower_wick > 0.6:
+            signals.append((+1, min(1.0, (lower_wick-0.6)/0.4), 0.4))
+
+        # 6) Volume confirmation aligned with drift or body
+        if vol_ratio > 1.5:
+            vol_dir = drift_dir if drift_dir!=0 else (+1 if is_green else -1)
+            signals.append((vol_dir, min(1.0, (vol_ratio-1.5)/1.5), 0.6))
+
+        # 7) Sentiment tilt
+        if abs(sent) > 0.05:
+            signals.append(((+1 if sent>0 else -1), min(1.0, abs(sent)), 0.35))
+
+        # Aggregate
+        if not signals:
+            return {'event_id': ev.get('id'), 'decision': 'LONG' if is_green else 'SHORT', 'confidence': 0.15}
+
+        num_pos = sum(1 for d,_,_ in signals if d>0)
+        num_neg = sum(1 for d,_,_ in signals if d<0)
+        agreement = max(num_pos, num_neg) / max(1, (num_pos + num_neg))
+
+        weighted = 0.0
+        weight_sum = 0.0
+        for d, s, w in signals:
+            weighted += d * s * w
+            weight_sum += w
+        comp = weighted / max(1e-9, weight_sum)
+
+        # Decision threshold adapts to volatility
+        thresh = 0.08 + min(0.12, atr_pct * 0.6)
+        if comp > thresh:
+            decision = 'LONG'
+        elif comp < -thresh:
+            decision = 'SHORT'
         else:
-            norm_move = 0.0
+            decision = 'LONG' if drift_dir>=0 else 'SHORT'
 
-        # If move is small (<0.4 ATR) expect mean-reversion within 30 min
-        if norm_move < 0.4:
-            decision = 'SHORT' if follow>0 else 'LONG'
-            conf = min(0.4, (0.4-norm_move)*0.5 + abs(sent)*0.2)
-        # If move is big (>0.7 ATR) expect momentum continuation
-        elif norm_move > 0.7:
-            decision = 'LONG' if follow>0 else 'SHORT'
-            conf = min(1.0, (norm_move-0.7)*0.5 + abs(sent)*0.3 + vol_ratio*0.05)
-        else:
-            # medium move: use sentiment alignment
-            decision = 'LONG' if sent>=0 else 'SHORT'
-            conf = min(0.6, abs(sent)*0.6 + abs(init)*20)
+        # Confidence: base |comp|, + confluence bonus, + volume, - extreme vol
+        conf = abs(comp)
+        conf += max(0.0, agreement - 0.5) * 0.5
+        if vol_ratio > 1.5:
+            conf += min(0.2, (vol_ratio-1.5)*0.05)
+        conf -= min(0.2, max(0.0, atr_pct - 0.03))  # penalize very high vol
+        conf = max(0.0, min(1.0, conf))
 
-        # existing pattern rules for large gaps & breakouts override if higher confidence
-        # pattern rules
-        if abs(gap)>0.008 and ((gap>0 and follow<-0.002) or (gap<0 and follow>0.002)):
-            decision = 'SHORT' if gap>0 else 'LONG'
-            conf = min(1.0, abs(gap)*30 + abs(follow)*50)
-        elif self._pct(o1_close, prev_high)>0.003 and follow>0:
-            decision='LONG'; conf = min(1.0, self._pct(o1_close, prev_high)*50 + follow*30)
-        elif self._pct(prev_low, o1_close)>0.003 and follow<0:
-            decision='SHORT'; conf = min(1.0, self._pct(prev_low, o1_close)*50 + abs(follow)*30)
-        elif vol_ratio>2.0 and abs(sent)>0.3 and ((sent>0 and init>0) or (sent<0 and init<0)) and abs(follow)>0.002:
-            decision = 'LONG' if sent>0 else 'SHORT'; conf=min(1.0, abs(sent)*0.8 + vol_ratio*0.1 + abs(follow)*40)
-        elif near_res and init<-0.002:
-            decision='SHORT'; conf=min(1.0, abs(init)*50+0.3)
-        elif near_sup and init>0.002:
-            decision='LONG'; conf=min(1.0, abs(init)*50+0.3)
-        elif abs(follow)>0.005:
-            decision='LONG' if follow>0 else 'SHORT'; conf=min(1.0, abs(follow)*40+vol_ratio*0.1)
-        else:
-            if abs(sent)>0.1:
-                decision='LONG' if sent>0 else 'SHORT'; conf=min(0.5, abs(sent)*0.5)
-            else:
-                decision='LONG' if init>0 else 'SHORT'; conf=min(0.3, abs(init)*20)
-
-        return {'event_id': ev.get('id'), 'decision':decision, 'confidence':conf}
+        return {'event_id': ev.get('id'), 'decision': decision, 'confidence': conf}
 
     # --- portfolio selection ---
     def pick_trades(self, scored: List[Dict[str,Any]], k:int=50) -> List[Dict[str,Any]]:
         if not scored:
             return []
-        scored.sort(key=lambda x: x['confidence'], reverse=True)
-        longs=[t for t in scored if t['decision']=='LONG']
-        shorts=[t for t in scored if t['decision']=='SHORT']
-        sel=[]; lc=sc=0; maxdir=int(k*0.7)
-        for t in scored:
-            if len(sel)>=k: break
-            if t['decision']=='LONG' and lc<maxdir: sel.append(t); lc+=1
-            elif t['decision']=='SHORT' and sc<maxdir: sel.append(t); sc+=1
-        if len(sel)<k:
-            for t in scored:
-                if t in sel: continue
-                sel.append(t)
-                if len(sel)>=k: break
-        # ensure diversity 20%
-        longs=[t for t in sel if t['decision']=='LONG']; shorts=[t for t in sel if t['decision']=='SHORT']
-        minminor=max(1,int(k*0.2))
-        if len(longs)<minminor:
-            need=minminor-len(longs)
-            add=[t for t in longs if False]  # placeholder
-        # (diversity adjustment skipped for brevity)
+        # gate low-confidence trades, relax if not enough
+        min_conf = 0.12
+        pool = [t for t in scored if t.get('confidence',0) >= min_conf]
+        if len(pool) < k:
+            min_conf = 0.08
+            pool = [t for t in scored if t.get('confidence',0) >= min_conf]
+        if not pool:
+            pool = scored[:]
+        pool.sort(key=lambda x: x.get('confidence',0.0), reverse=True)
+
+        # target 40–60% balance
+        target_min = int(k*0.4)
+        target_max = int(k*0.6)
+
+        longs = [t for t in pool if t['decision']=='LONG']
+        shorts= [t for t in pool if t['decision']=='SHORT']
+
+        sel: List[Dict[str,Any]] = []
+        i=j=0
+        # interleave by confidence while respecting caps
+        while len(sel) < k and (i < len(longs) or j < len(shorts)):
+            take_long = len([x for x in sel if x['decision']=='LONG']) <= len([x for x in sel if x['decision']=='SHORT'])
+            if take_long and i < len(longs) and len([x for x in sel if x['decision']=='LONG']) < target_max:
+                sel.append(longs[i]); i+=1
+            elif j < len(shorts) and len([x for x in sel if x['decision']=='SHORT']) < target_max:
+                sel.append(shorts[j]); j+=1
+            elif i < len(longs):
+                sel.append(longs[i]); i+=1
+            elif j < len(shorts):
+                sel.append(shorts[j]); j+=1
+            else:
+                break
+
+        # fill if still short
+        if len(sel) < k:
+            rest = [t for t in pool if t not in sel]
+            sel.extend(rest[:k-len(sel)])
+
+        # enforce minimum minority
+        cnt_long = len([x for x in sel if x['decision']=='LONG'])
+        cnt_short= len(sel) - cnt_long
+        minority_needed = int(k*0.4)
+        if cnt_long < minority_needed and cnt_short > (k - minority_needed):
+            need = minority_needed - cnt_long
+            add = [t for t in longs if t not in sel][:need]
+            if add:
+                # replace lowest-confidence shorts
+                shorts_in_sel = [t for t in sel if t['decision']=='SHORT']
+                shorts_in_sel.sort(key=lambda x: x.get('confidence',0.0))
+                for r in shorts_in_sel[:len(add)]:
+                    sel.remove(r)
+                sel.extend(add)
+        elif cnt_short < minority_needed and cnt_long > (k - minority_needed):
+            need = minority_needed - cnt_short
+            add = [t for t in shorts if t not in sel][:need]
+            if add:
+                longs_in_sel = [t for t in sel if t['decision']=='LONG']
+                longs_in_sel.sort(key=lambda x: x.get('confidence',0.0))
+                for r in longs_in_sel[:len(add)]:
+                    sel.remove(r)
+                sel.extend(add)
+
         return sel[:k]
 
 # --- Flask endpoint ---

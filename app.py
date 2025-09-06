@@ -499,15 +499,19 @@ def investigate():
         data = request.get_json(force=True, silent=True)
     except Exception:
         data = None
-
+        
     if isinstance(data, dict):
-        networks_data = data.get("networks", [])
+        if "networks" in data and isinstance(data["networks"], list):
+            networks_data = data["networks"]
+        elif "networkId" in data:
+            networks_data = [data]
+        else:
+            networks_data = []
     elif isinstance(data, list):
         networks_data = data
     else:
         networks_data = []
 
-    networks_data = data.get("networks", [])
     if isinstance(networks_data, dict):
         # Convert single object to list (fixes common API usage error)
         networks_data = [networks_data]

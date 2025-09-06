@@ -479,7 +479,7 @@ def _extra_channels(edges: List[Dict[str, str]]) -> List[Dict[str, str]]:
 
 @app.post("/investigate")
 def investigate():
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(force=True, silent=True) or {}
     networks_input: List[Dict] = payload.get("networks", [])
 
     result_networks: List[Dict] = []

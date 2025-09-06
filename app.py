@@ -6,6 +6,7 @@ from scipy import interpolate
 import numpy as np
 from flask_cors import CORS
 import random
+import time
 
 try:
     # When running as a package: `python -m ubs_server.app` or `flask run` with APP=ubs_server.app
@@ -2602,92 +2603,172 @@ def _adv_get_mode_options(mode):
 
 # Trading Bot Core Logic
 class TradingBot:
-    """Advanced crypto trading bot with sentiment analysis and technical indicators"""
+    """Advanced crypto trading bot with multi-signal analysis and predictive modeling"""
     
     def __init__(self):
-        # Sentiment keywords for news analysis
-        self.bullish_keywords = [
-            'buy', 'bull', 'bullish', 'moon', 'pump', 'rally', 'surge', 'breakout', 'adoption',
-            'institutional', 'reserve', 'etf', 'approval', 'partnership', 'growth', 'positive',
-            'upgrade', 'support', 'breakthrough', 'milestone', 'innovation', 'strategic',
-            'investment', 'accumulation', 'halving', 'scarcity', 'treasury', 'allocation',
-            'strength', 'momentum', 'bullmarket', 'uptick', 'gains', 'rise', 'climb'
-        ]
+        # Enhanced sentiment keywords with weights
+        self.bullish_keywords = {
+            # High impact bullish
+            'pump': 3, 'moon': 3, 'breakout': 3, 'surge': 3, 'rally': 3,
+            'adoption': 2.5, 'institutional': 2.5, 'etf': 2.5, 'approval': 2.5,
+            'reserve': 2.5, 'treasury': 2.5, 'strategic': 2,
+            
+            # Medium impact bullish  
+            'bull': 2, 'bullish': 2, 'buy': 2, 'growth': 2, 'positive': 2,
+            'upgrade': 2, 'support': 2, 'breakthrough': 2, 'milestone': 2,
+            'partnership': 1.8, 'investment': 1.8, 'accumulation': 1.8,
+            
+            # Lower impact bullish
+            'innovation': 1.5, 'allocation': 1.5, 'strength': 1.5, 'momentum': 1.5,
+            'gains': 1.5, 'rise': 1.5, 'climb': 1.5, 'uptick': 1.2,
+            'halving': 1.8, 'scarcity': 1.5
+        }
         
-        self.bearish_keywords = [
-            'sell', 'bear', 'bearish', 'dump', 'crash', 'correction', 'drop', 'fall',
-            'regulation', 'ban', 'crackdown', 'lawsuit', 'hack', 'security', 'concern',
-            'risk', 'volatile', 'uncertainty', 'decline', 'loss', 'liquidation',
-            'bubble', 'overvalued', 'skeptical', 'warning', 'caution', 'negative',
-            'weakness', 'breakdown', 'resistance', 'profit-taking', 'fear'
-        ]
+        self.bearish_keywords = {
+            # High impact bearish
+            'crash': 3, 'dump': 3, 'liquidation': 3, 'ban': 3, 'crackdown': 3,
+            'hack': 2.5, 'security': 2.5, 'lawsuit': 2.5, 'regulation': 2.5,
+            
+            # Medium impact bearish
+            'bear': 2, 'bearish': 2, 'sell': 2, 'correction': 2, 'drop': 2,
+            'fall': 2, 'concern': 2, 'risk': 2, 'uncertainty': 2, 'decline': 2,
+            'loss': 2, 'negative': 2, 'weakness': 2, 'breakdown': 2,
+            
+            # Lower impact bearish
+            'volatile': 1.5, 'bubble': 1.5, 'overvalued': 1.5, 'skeptical': 1.5,
+            'warning': 1.5, 'caution': 1.5, 'resistance': 1.2, 'profit-taking': 1.2,
+            'fear': 1.8
+        }
         
-        # High impact keywords that amplify sentiment
-        self.high_impact_keywords = [
-            'trump', 'biden', 'fed', 'federal', 'government', 'sec', 'cftc', 'treasury',
-            'blackrock', 'fidelity', 'vanguard', 'grayscale', 'microstrategy', 'tesla',
-            'coinbase', 'binance', 'institutional', 'whale', 'massive', 'huge', 'billions'
-        ]
+        # High impact entities and keywords that amplify sentiment
+        self.high_impact_entities = {
+            'trump': 2.5, 'biden': 2.5, 'fed': 2.8, 'federal': 2.8, 'government': 2.2,
+            'sec': 2.5, 'cftc': 2.5, 'treasury': 2.8, 'blackrock': 2.8, 'fidelity': 2.5,
+            'vanguard': 2.5, 'grayscale': 2.2, 'microstrategy': 2.2, 'tesla': 2.0,
+            'coinbase': 1.8, 'binance': 1.8, 'whale': 2.0, 'massive': 1.5,
+            'huge': 1.5, 'billions': 1.8, 'millions': 1.5
+        }
+        
+        # Time-based sentiment modifiers
+        self.time_sensitive_keywords = {
+            'now': 1.3, 'today': 1.3, 'breaking': 1.5, 'urgent': 1.4, 'immediate': 1.4,
+            'just': 1.2, 'announced': 1.3, 'confirms': 1.3, 'official': 1.4
+        }
     
     def analyze_sentiment(self, title: str, source: str) -> float:
-        """Analyze sentiment from news title and source with weighted scoring"""
+        """Enhanced sentiment analysis with weighted keywords and context understanding"""
         title_lower = title.lower()
+        words = title_lower.split()
         
-        # Base sentiment score
-        bullish_score = sum(1 for word in self.bullish_keywords if word in title_lower)
-        bearish_score = sum(1 for word in self.bearish_keywords if word in title_lower)
+        # Calculate weighted sentiment scores
+        bullish_score = 0.0
+        bearish_score = 0.0
         
-        # Apply high impact multiplier
-        impact_multiplier = 1.0
-        if any(word in title_lower for word in self.high_impact_keywords):
-            impact_multiplier = 2.0
+        # Check for bullish keywords with weights
+        for keyword, weight in self.bullish_keywords.items():
+            if keyword in title_lower:
+                bullish_score += weight
         
-        # Source credibility weighting
-        source_weight = 1.0
-        if source.lower() in ['reuters', 'bloomberg', 'wsj', 'financial times']:
-            source_weight = 1.5
-        elif source.lower() in ['twitter', 'reddit']:
-            source_weight = 0.8
+        # Check for bearish keywords with weights  
+        for keyword, weight in self.bearish_keywords.items():
+            if keyword in title_lower:
+                bearish_score += weight
+                
+        # Apply entity-based amplification
+        entity_multiplier = 1.0
+        for entity, multiplier in self.high_impact_entities.items():
+            if entity in title_lower:
+                entity_multiplier = max(entity_multiplier, multiplier)
         
-        # Calculate net sentiment with weights
-        net_sentiment = (bullish_score - bearish_score) * impact_multiplier * source_weight
+        # Apply time-sensitive modifiers
+        time_multiplier = 1.0
+        for time_word, multiplier in self.time_sensitive_keywords.items():
+            if time_word in title_lower:
+                time_multiplier = max(time_multiplier, multiplier)
         
-        # Normalize to [-1, 1] range
-        if net_sentiment > 0:
-            return min(1.0, net_sentiment / 5.0)
-        elif net_sentiment < 0:
-            return max(-1.0, net_sentiment / 5.0)
+        # Source credibility weighting - more nuanced
+        source_lower = source.lower()
+        if source_lower in ['reuters', 'bloomberg', 'wsj', 'financial times', 'cnbc', 'cnn']:
+            source_weight = 1.4
+        elif source_lower in ['coindesk', 'cointelegraph', 'decrypt']:
+            source_weight = 1.3
+        elif source_lower in ['twitter', 'x.com']:
+            source_weight = 0.9
+        elif source_lower in ['reddit']:
+            source_weight = 0.7
         else:
-            return 0.0
+            source_weight = 1.0
+            
+        # Handle negation patterns
+        negation_words = ['not', 'no', 'never', 'none', 'nothing', 'neither', 'nowhere']
+        has_negation = any(neg in words for neg in negation_words)
+        
+        # Calculate net sentiment with all modifiers
+        base_sentiment = bullish_score - bearish_score
+        
+        # Apply negation reversal
+        if has_negation:
+            base_sentiment = -base_sentiment * 0.8  # Slightly weaken negated sentiment
+            
+        # Apply all multipliers
+        final_sentiment = base_sentiment * entity_multiplier * time_multiplier * source_weight
+        
+        # Normalize to [-1, 1] range with better scaling
+        max_possible = 15.0  # Estimated max possible score
+        normalized = final_sentiment / max_possible
+        
+        return max(-1.0, min(1.0, normalized))
     
     def calculate_technical_indicators(self, previous_candles: List[Dict], observation_candles: List[Dict]) -> Dict[str, float]:
-        """Calculate technical indicators from price data"""
+        """Enhanced technical analysis with multiple indicators"""
         # Combine all available price data
         all_candles = previous_candles + observation_candles
         
-        if len(all_candles) < 3:
-            return {"rsi": 50.0, "macd": 0.0, "momentum": 0.0, "volume_ratio": 1.0}
+        if len(all_candles) < 2:
+            return {"rsi": 50.0, "macd": 0.0, "momentum": 0.0, "volume_ratio": 1.0, 
+                   "price_trend": 0.0, "volatility": 0.0, "volume_trend": 0.0, "support_resistance": 0.0}
         
+        # Extract price and volume data
         closes = [float(candle['close']) for candle in all_candles]
+        opens = [float(candle['open']) for candle in all_candles]
+        highs = [float(candle['high']) for candle in all_candles]
+        lows = [float(candle['low']) for candle in all_candles]
         volumes = [float(candle['volume']) for candle in all_candles]
         
-        # RSI calculation (simplified)
+        # Focus on the most recent observation candles for prediction
+        obs_closes = [float(candle['close']) for candle in observation_candles] if observation_candles else closes[-3:]
+        obs_volumes = [float(candle['volume']) for candle in observation_candles] if observation_candles else volumes[-3:]
+        
+        # 1. Enhanced RSI
         rsi = self.calculate_rsi(closes)
         
-        # MACD-like momentum indicator
-        macd = self.calculate_momentum(closes)
+        # 2. Price momentum analysis
+        momentum = self.calculate_advanced_momentum(closes, obs_closes)
         
-        # Price momentum over available period
-        momentum = (closes[-1] - closes[0]) / closes[0] * 100 if closes[0] != 0 else 0.0
+        # 3. Volatility analysis (crucial for 30-min prediction)
+        volatility = self.calculate_volatility_indicator(highs, lows, closes)
         
-        # Volume analysis
-        volume_ratio = volumes[-1] / np.mean(volumes[:-1]) if len(volumes) > 1 and np.mean(volumes[:-1]) > 0 else 1.0
+        # 4. Volume analysis with trend
+        volume_analysis = self.calculate_volume_indicators(volumes, obs_volumes)
+        
+        # 5. Support/Resistance levels
+        support_resistance = self.calculate_support_resistance(closes, highs, lows)
+        
+        # 6. Price trend strength
+        price_trend = self.calculate_price_trend(closes, obs_closes)
+        
+        # 7. Candle pattern analysis
+        candle_pattern = self.analyze_candle_patterns(opens, highs, lows, closes, observation_candles)
         
         return {
             "rsi": rsi,
-            "macd": macd,
             "momentum": momentum,
-            "volume_ratio": volume_ratio
+            "volatility": volatility,
+            "volume_ratio": volume_analysis['ratio'],
+            "volume_trend": volume_analysis['trend'], 
+            "price_trend": price_trend,
+            "support_resistance": support_resistance,
+            "candle_pattern": candle_pattern
         }
     
     def calculate_rsi(self, prices: List[float], period: int = 14) -> float:
@@ -2724,19 +2805,167 @@ class TradingBot:
         
         return rsi
     
-    def calculate_momentum(self, prices: List[float]) -> float:
-        """Calculate price momentum indicator"""
-        if len(prices) < 3:
+    def calculate_advanced_momentum(self, all_closes: List[float], obs_closes: List[float]) -> float:
+        """Calculate advanced momentum with multiple timeframes"""
+        if len(all_closes) < 2:
             return 0.0
+            
+        # Short-term momentum (observation period)
+        if len(obs_closes) >= 2:
+            short_momentum = (obs_closes[-1] - obs_closes[0]) / obs_closes[0] * 100
+        else:
+            short_momentum = 0.0
+            
+        # Medium-term momentum (all available data)
+        if len(all_closes) >= 3:
+            mid_momentum = (all_closes[-1] - all_closes[-3]) / all_closes[-3] * 100
+        else:
+            mid_momentum = 0.0
+            
+        # Rate of change acceleration
+        if len(all_closes) >= 3:
+            recent_roc = (all_closes[-1] - all_closes[-2]) / all_closes[-2]
+            earlier_roc = (all_closes[-2] - all_closes[-3]) / all_closes[-3]
+            acceleration = recent_roc - earlier_roc
+        else:
+            acceleration = 0.0
+            
+        # Combine momentum signals
+        combined_momentum = (short_momentum * 0.5 + mid_momentum * 0.3 + acceleration * 100 * 0.2)
+        return max(-10.0, min(10.0, combined_momentum))
+    
+    def calculate_volatility_indicator(self, highs: List[float], lows: List[float], closes: List[float]) -> float:
+        """Calculate volatility measure for prediction confidence"""
+        if len(closes) < 2:
+            return 0.0
+            
+        # True Range calculation
+        true_ranges = []
+        for i in range(1, len(closes)):
+            tr1 = highs[i] - lows[i]
+            tr2 = abs(highs[i] - closes[i-1])
+            tr3 = abs(lows[i] - closes[i-1])
+            true_ranges.append(max(tr1, tr2, tr3))
+            
+        if not true_ranges:
+            return 0.0
+            
+        # Average True Range
+        atr = np.mean(true_ranges)
         
-        # Simple momentum: recent price change vs earlier price change
-        recent_change = prices[-1] - prices[-2] if len(prices) >= 2 else 0
-        earlier_change = prices[-2] - prices[-3] if len(prices) >= 3 else 0
+        # Normalize by price level
+        avg_price = np.mean(closes[-3:]) if len(closes) >= 3 else closes[-1]
+        normalized_volatility = (atr / avg_price) * 100
         
-        if earlier_change == 0:
-            return recent_change
+        return min(10.0, normalized_volatility)
+    
+    def calculate_volume_indicators(self, all_volumes: List[float], obs_volumes: List[float]) -> Dict[str, float]:
+        """Analyze volume patterns"""
+        if len(all_volumes) < 2:
+            return {"ratio": 1.0, "trend": 0.0}
+            
+        # Volume ratio (recent vs average)
+        recent_vol = obs_volumes[-1] if obs_volumes else all_volumes[-1]
+        avg_vol = np.mean(all_volumes[:-1]) if len(all_volumes) > 1 else all_volumes[0]
+        volume_ratio = recent_vol / avg_vol if avg_vol > 0 else 1.0
         
-        return (recent_change - earlier_change) / abs(earlier_change)
+        # Volume trend
+        if len(obs_volumes) >= 2:
+            vol_trend = (obs_volumes[-1] - obs_volumes[0]) / obs_volumes[0] * 100
+        elif len(all_volumes) >= 3:
+            vol_trend = (all_volumes[-1] - all_volumes[-3]) / all_volumes[-3] * 100
+        else:
+            vol_trend = 0.0
+            
+        return {
+            "ratio": min(5.0, volume_ratio),
+            "trend": max(-100.0, min(100.0, vol_trend))
+        }
+    
+    def calculate_support_resistance(self, closes: List[float], highs: List[float], lows: List[float]) -> float:
+        """Calculate proximity to support/resistance levels"""
+        if len(closes) < 3:
+            return 0.0
+            
+        current_price = closes[-1]
+        
+        # Find recent highs and lows as potential S/R levels
+        recent_highs = highs[-5:] if len(highs) >= 5 else highs
+        recent_lows = lows[-5:] if len(lows) >= 5 else lows
+        
+        max_high = max(recent_highs)
+        min_low = min(recent_lows)
+        
+        # Calculate position within range
+        if max_high != min_low:
+            position = (current_price - min_low) / (max_high - min_low)
+            # Convert to signal: -1 (near support) to +1 (near resistance)
+            return (position - 0.5) * 2
+        
+        return 0.0
+    
+    def calculate_price_trend(self, all_closes: List[float], obs_closes: List[float]) -> float:
+        """Calculate trend strength and direction"""
+        if len(all_closes) < 2:
+            return 0.0
+            
+        # Linear regression on recent prices
+        if len(obs_closes) >= 3:
+            x = np.arange(len(obs_closes))
+            slope, _, r_value, _, _ = linregress(x, obs_closes)
+            trend_strength = slope * r_value  # Slope weighted by correlation
+        else:
+            # Simple trend
+            trend_strength = (all_closes[-1] - all_closes[0]) / all_closes[0] * 100 if len(all_closes) > 1 else 0.0
+            
+        return max(-5.0, min(5.0, trend_strength))
+    
+    def analyze_candle_patterns(self, opens: List[float], highs: List[float], lows: List[float], 
+                               closes: List[float], observation_candles: List[Dict]) -> float:
+        """Analyze candlestick patterns for directional bias"""
+        if not observation_candles or len(observation_candles) < 1:
+            return 0.0
+            
+        pattern_score = 0.0
+        
+        for i, candle in enumerate(observation_candles):
+            open_price = float(candle['open'])
+            close_price = float(candle['close'])
+            high_price = float(candle['high'])
+            low_price = float(candle['low'])
+            
+            body_size = abs(close_price - open_price)
+            candle_range = high_price - low_price
+            
+            if candle_range == 0:
+                continue
+                
+            # Body to total range ratio
+            body_ratio = body_size / candle_range
+            
+            # Bullish patterns
+            if close_price > open_price:  # Green candle
+                if body_ratio > 0.7:  # Strong bullish candle
+                    pattern_score += 1.0
+                elif body_ratio > 0.5:  # Moderate bullish
+                    pattern_score += 0.5
+                    
+            # Bearish patterns  
+            elif close_price < open_price:  # Red candle
+                if body_ratio > 0.7:  # Strong bearish candle
+                    pattern_score -= 1.0
+                elif body_ratio > 0.5:  # Moderate bearish
+                    pattern_score -= 0.5
+                    
+            # Doji patterns (indecision)
+            if body_ratio < 0.1:
+                pattern_score += 0.1  # Slight uncertainty bias
+                
+        # Average pattern score
+        if observation_candles:
+            pattern_score /= len(observation_candles)
+            
+        return max(-2.0, min(2.0, pattern_score))
     
     def calculate_volatility_score(self, observation_candles: List[Dict]) -> float:
         """Calculate volatility score from observation candles"""
@@ -2755,7 +2984,7 @@ class TradingBot:
         return np.mean(price_ranges) * 100  # Convert to percentage
     
     def score_news_event(self, event: Dict) -> Dict[str, Any]:
-        """Score a single news event for trading potential"""
+        """Enhanced scoring with multi-factor analysis optimized for 30-minute predictions"""
         # Extract data
         title = event.get('title', '')
         source = event.get('source', '')
@@ -2765,86 +2994,196 @@ class TradingBot:
         # Calculate components
         sentiment = self.analyze_sentiment(title, source)
         technical = self.calculate_technical_indicators(previous_candles, observation_candles)
-        volatility = self.calculate_volatility_score(observation_candles)
         
         # Get entry price (first observation candle close)
         entry_price = 0.0
         if observation_candles:
             entry_price = float(observation_candles[0].get('close', 0))
         
-        # Combine signals for final score
-        # Technical weight: 40%, Sentiment: 35%, Volatility: 25%
+        # Enhanced technical signal combining multiple indicators
+        # Weights optimized for 30-minute prediction horizon
         technical_signal = (
-            (technical['momentum'] * 0.3) +
-            ((technical['rsi'] - 50) / 50 * 0.2) +  # Normalize RSI to [-1,1]
-            (technical['macd'] * 0.3) +
-            ((technical['volume_ratio'] - 1) * 0.2)  # Volume above average is positive
+            technical['momentum'] * 0.25 +           # Short-term momentum crucial
+            technical['price_trend'] * 0.20 +        # Trend direction 
+            technical['candle_pattern'] * 0.15 +     # Pattern recognition
+            ((technical['rsi'] - 50) / 50) * 0.10 +  # RSI overbought/oversold
+            (technical['volume_trend'] / 100) * 0.15 + # Volume trend
+            technical['support_resistance'] * 0.10 +  # S/R levels
+            ((technical['volume_ratio'] - 1) * 0.5) * 0.05  # Volume spike
         )
         
-        # Volatility contributes to trading opportunity (higher volatility = more opportunity)
-        volatility_signal = min(volatility / 5.0, 1.0)  # Cap at 1.0
+        # Volatility-adjusted confidence (higher volatility = more predictable moves)
+        volatility_factor = min(technical['volatility'] / 3.0, 1.0)
         
-        # Combined signal
+        # News impact timing decay (fresher news has more impact)
+        news_time = event.get('time', 0)
+        current_time = time.time() * 1000  # Convert to milliseconds
+        time_decay = 1.0
+        if news_time > 0:
+            hours_old = (current_time - news_time) / (1000 * 60 * 60)
+            time_decay = max(0.5, 1.0 - (hours_old * 0.1))  # Decay over time
+        
+        # Sentiment with time decay
+        adjusted_sentiment = sentiment * time_decay
+        
+        # Combined signal with new weights optimized for short-term prediction
+        # Technical analysis gets higher weight for 30-min predictions
         combined_signal = (
-            technical_signal * 0.4 +
-            sentiment * 0.35 +
-            volatility_signal * 0.25
+            technical_signal * 0.55 +      # Technical indicators (increased)
+            adjusted_sentiment * 0.30 +    # News sentiment with time decay
+            volatility_factor * 0.15       # Volatility confidence boost
         )
         
-        # Determine trading direction
-        if combined_signal > 0.1:
+        # Adaptive decision thresholds based on signal strength and volatility
+        base_threshold = 0.08
+        volatility_threshold_adjustment = technical['volatility'] * 0.01
+        decision_threshold = base_threshold + volatility_threshold_adjustment
+        
+        # Determine trading direction with adaptive thresholds
+        if combined_signal > decision_threshold:
             decision = "LONG"
-        elif combined_signal < -0.1:
+        elif combined_signal < -decision_threshold:
             decision = "SHORT"
         else:
-            # For neutral signals, use momentum as tiebreaker
-            decision = "LONG" if technical['momentum'] >= 0 else "SHORT"
+            # For neutral signals, use multiple tiebreakers
+            if abs(technical['momentum']) > 0.5:
+                decision = "LONG" if technical['momentum'] > 0 else "SHORT"
+            elif abs(technical['price_trend']) > 0.3:
+                decision = "LONG" if technical['price_trend'] > 0 else "SHORT" 
+            elif abs(technical['candle_pattern']) > 0.2:
+                decision = "LONG" if technical['candle_pattern'] > 0 else "SHORT"
+            else:
+                # Final fallback: slight bias toward momentum
+                decision = "LONG" if technical['momentum'] >= 0 else "SHORT"
+        
+        # Calculate confidence with multiple factors
+        base_confidence = abs(combined_signal)
+        volatility_confidence = min(technical['volatility'] / 5.0, 0.3)  # Up to 30% boost
+        sentiment_confidence = min(abs(sentiment) * 0.2, 0.2)  # Up to 20% boost
+        
+        final_confidence = base_confidence + volatility_confidence + sentiment_confidence
         
         return {
             'event_id': event.get('id'),
             'decision': decision,
-            'confidence': abs(combined_signal),
+            'confidence': min(final_confidence, 1.0),  # Cap at 1.0
             'sentiment': sentiment,
             'technical_signal': technical_signal,
-            'volatility': volatility,
+            'volatility': technical['volatility'],
             'entry_price': entry_price,
-            'combined_signal': combined_signal
+            'combined_signal': combined_signal,
+            'time_decay': time_decay,
+            'technical_details': technical  # Keep for debugging
         }
     
     def select_best_trades(self, scored_events: List[Dict], target_count: int = 50) -> List[Dict]:
-        """Select the best trading opportunities"""
-        # Sort by confidence (absolute signal strength) descending
-        scored_events.sort(key=lambda x: x['confidence'], reverse=True)
-        
-        # Take top target_count events
-        selected = scored_events[:target_count]
-        
-        # Ensure we have a mix of LONG and SHORT positions for diversification
-        long_trades = [trade for trade in selected if trade['decision'] == 'LONG']
-        short_trades = [trade for trade in selected if trade['decision'] == 'SHORT']
-        
-        # If too skewed, balance the portfolio
-        if len(long_trades) > target_count * 0.8:  # More than 80% long
-            # Replace some long trades with best short trades
-            excess_long = len(long_trades) - int(target_count * 0.7)
-            remaining_short = [trade for trade in scored_events if trade['decision'] == 'SHORT' and trade not in selected]
-            remaining_short.sort(key=lambda x: x['confidence'], reverse=True)
+        """Enhanced trade selection with multi-criteria optimization"""
+        if not scored_events:
+            return []
             
-            # Replace lowest confidence long trades with highest confidence short trades
-            long_trades.sort(key=lambda x: x['confidence'])
-            selected = long_trades[excess_long:] + short_trades + remaining_short[:excess_long]
+        # Filter out trades with very low confidence or weak signals
+        min_confidence = 0.1
+        quality_trades = [trade for trade in scored_events if trade['confidence'] >= min_confidence]
         
-        elif len(short_trades) > target_count * 0.8:  # More than 80% short
-            # Replace some short trades with best long trades
-            excess_short = len(short_trades) - int(target_count * 0.7)
-            remaining_long = [trade for trade in scored_events if trade['decision'] == 'LONG' and trade not in selected]
-            remaining_long.sort(key=lambda x: x['confidence'], reverse=True)
+        if len(quality_trades) < target_count:
+            # If not enough quality trades, lower the bar slightly
+            min_confidence = 0.05
+            quality_trades = [trade for trade in scored_events if trade['confidence'] >= min_confidence]
+        
+        # Multi-criteria scoring for final selection
+        for trade in quality_trades:
+            # Base score from confidence
+            score = trade['confidence'] * 100
             
-            # Replace lowest confidence short trades with highest confidence long trades
-            short_trades.sort(key=lambda x: x['confidence'])
-            selected = short_trades[excess_short:] + long_trades + remaining_long[:excess_short]
+            # Bonus for strong technical signals
+            if abs(trade['technical_signal']) > 0.5:
+                score += 10
+            
+            # Bonus for high volatility (more predictable moves)
+            if trade['volatility'] > 2.0:
+                score += 5
+                
+            # Bonus for strong sentiment with good timing
+            sentiment_score = abs(trade['sentiment']) * trade.get('time_decay', 1.0)
+            if sentiment_score > 0.3:
+                score += sentiment_score * 10
+                
+            # Bonus for confluence of signals (when multiple indicators agree)
+            signal_agreement = 0
+            signals = [
+                trade['technical_signal'],
+                trade['sentiment'],
+                trade.get('technical_details', {}).get('momentum', 0) / 10,
+                trade.get('technical_details', {}).get('price_trend', 0) / 5
+            ]
+            
+            positive_signals = sum(1 for s in signals if s > 0.1)
+            negative_signals = sum(1 for s in signals if s < -0.1)
+            
+            if positive_signals >= 3 or negative_signals >= 3:
+                score += 15  # Bonus for signal confluence
+            elif positive_signals >= 2 or negative_signals >= 2:
+                score += 5
+                
+            trade['selection_score'] = score
         
-        return selected[:target_count]
+        # Sort by selection score
+        quality_trades.sort(key=lambda x: x['selection_score'], reverse=True)
+        
+        # Smart portfolio construction
+        selected_trades = []
+        long_count = 0
+        short_count = 0
+        max_per_direction = int(target_count * 0.75)  # Allow up to 75% in one direction
+        
+        # First pass: select highest scoring trades with direction balance
+        for trade in quality_trades:
+            if len(selected_trades) >= target_count:
+                break
+                
+            if trade['decision'] == 'LONG':
+                if long_count < max_per_direction:
+                    selected_trades.append(trade)
+                    long_count += 1
+            else:  # SHORT
+                if short_count < max_per_direction:
+                    selected_trades.append(trade)
+                    short_count += 1
+        
+        # Second pass: fill remaining slots with best available
+        if len(selected_trades) < target_count:
+            remaining = [t for t in quality_trades if t not in selected_trades]
+            needed = target_count - len(selected_trades)
+            selected_trades.extend(remaining[:needed])
+        
+        # Final selection with minimum diversity requirement
+        final_selected = selected_trades[:target_count]
+        
+        # Ensure minimum diversity (at least 20% of each direction if possible)
+        final_long = [t for t in final_selected if t['decision'] == 'LONG']
+        final_short = [t for t in final_selected if t['decision'] == 'SHORT']
+        
+        min_minority = max(1, int(target_count * 0.2))  # At least 20% or 1 trade
+        
+        if len(final_long) < min_minority and len(final_short) >= min_minority:
+            # Need more LONG trades
+            unused_long = [t for t in quality_trades if t['decision'] == 'LONG' and t not in final_selected]
+            if unused_long:
+                needed_long = min(min_minority - len(final_long), len(unused_long))
+                # Replace lowest scoring SHORT trades with best unused LONG trades
+                final_short.sort(key=lambda x: x['selection_score'])
+                final_selected = final_short[needed_long:] + final_long + unused_long[:needed_long]
+                
+        elif len(final_short) < min_minority and len(final_long) >= min_minority:
+            # Need more SHORT trades
+            unused_short = [t for t in quality_trades if t['decision'] == 'SHORT' and t not in final_selected]
+            if unused_short:
+                needed_short = min(min_minority - len(final_short), len(unused_short))
+                # Replace lowest scoring LONG trades with best unused SHORT trades
+                final_long.sort(key=lambda x: x['selection_score'])
+                final_selected = final_long[needed_short:] + final_short + unused_short[:needed_short]
+        
+        return final_selected[:target_count]
 
 @app.route("/trading-bot", methods=["POST"])
 def trading_bot():

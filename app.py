@@ -9,7 +9,8 @@ import re, math
 import time
 
 app = Flask(__name__)
-
+app.config['JSON_SORT_KEYS'] = False
+app.json.sort_keys = False
 
 def bad_request(message: str, details: Optional[Dict[str, Any]] = None, status_code: int = 400):
     payload = {"error": message}
@@ -543,7 +544,7 @@ def investigate():
             "extraChannels": extra_channels
         })
 
-    resp = make_response(jsonify({"networks": result_networks}), 200)
+    resp = make_response({"networks": result_networks}, 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
 

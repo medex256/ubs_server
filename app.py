@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, make_response
 from math import hypot
+import os
 from typing import Any, Dict, List, Tuple, Optional
 import numpy as np
 from scipy import interpolate, signal
@@ -267,7 +268,7 @@ def blankety():
 @app.route("/trivia", methods=["GET"])
 def trivia():
     res = {
-        "answers": [4, 1, 2, ]
+        "answers": [4, 1, ]
     }
     return res
 
@@ -359,10 +360,7 @@ def ticketing_agent():
 
 @app.route("/")
 def root():
-    resp = make_response(jsonify({"service": "ticketing-agent", "status": "ok"}), 200)
-    resp.headers["Content-Type"] = "application/json"
-    return resp
-
+    return "OK", 200
 
 if __name__ == "__main__":
     # For local development only

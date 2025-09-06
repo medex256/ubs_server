@@ -295,146 +295,128 @@ def root():
     return "OK", 200
 
 
+
 @app.route("/princess-diaries", methods=["POST"])
 def princess_diaries():
     data = request.get_json(silent=True)
     if not data:
         return bad_request("Invalid JSON body.")
-    
-    # Extract data
+
     tasks = data.get("tasks", [])
     subway = data.get("subway", [])
     starting_station = data.get("starting_station")
-    
+
     if not isinstance(tasks, list) or not isinstance(subway, list) or starting_station is None:
         return bad_request("Invalid input format.")
-    
-    # Early exit for empty case
     if not tasks:
         return jsonify({"max_score": 0, "min_fee": 0, "schedule": []}), 200
-    
-    # Build adjacency list for subway system
-    graph = {}
-    for route in subway:
-        conn = route.get("connection", [])
-        fee = route.get("fee", 0)
-        if len(conn) == 2:
-            u, v = conn
-            if u not in graph: graph[u] = {}
-            if v not in graph: graph[v] = {}
-            graph[u][v] = fee
-            graph[v][u] = fee  # Undirected graph
-    
-    # Ensure starting station exists in graph
-    if starting_station not in graph:
-        graph[starting_station] = {}
-    
-    # Compute all-pairs shortest paths using Floyd-Warshall algorithm (more reliable than on-demand Dijkstra)
-    stations = set(graph.keys())
-    distances = {}
-    
-    # Initialize distance matrix
-    for u in stations:
-        distances[u] = {}
-        for v in stations:
-            if u == v:
-                distances[u][v] = 0
-            elif v in graph.get(u, {}):
-                distances[u][v] = graph[u][v]
-            else:
-                distances[u][v] = float('inf')
-    
-    # Floyd-Warshall algorithm
-    for k in stations:
-        for i in stations:
-            for j in stations:
-                if distances[i][k] + distances[k][j] < distances[i][j]:
-                    distances[i][j] = distances[i][k] + distances[k][j]
-    
-    # Sort tasks by start time for chronological processing
-    tasks_sorted = sorted(tasks, key=lambda t: t["start"])
-    
-    # Pre-compute compatible task lists (tasks that can be done after a given task)
-    n = len(tasks_sorted)
-    compatible_tasks = [[] for _ in range(n + 1)]
-    
-    # Special case for starting point (index -1)
-    compatible_tasks[n] = []  # Terminal state
-    
+
+    # ------------------------------------------------------------------
+    # 1. Build compact station index and distance matrix  (FAST VERSION)
+    # ------------------------------------------------------------------
+    stations = {starting_station}
+    for t in tasks:
+        stations.add(t["station"])
+    for r in subway:
+        if len(r.get("connection", [])) == 2:
+            stations.update(r["connection"])
+
+    idx_of = {s: i for i, s in enumerate(stations)}
+    n_st = len(stations)
+
+    inf = float("inf")
+    dist = [[inf] * n_st for _ in range(n_st)]
+    for i in range(n_st):
+        dist[i][i] = 0
+
+    for r in subway:
+        u, v = r.get("connection", [None, None])
+        fee = r.get("fee", 0)
+        if u in idx_of and v in idx_of:
+            iu, iv = idx_of[u], idx_of[v]
+            if fee < dist[iu][iv]:     # keep the cheapest parallel edge
+                dist[iu][iv] = dist[iv][iu] = fee
+
+    # Floyd-Warshall on the int matrix
+    for k in range(n_st):
+        dk = dist[k]
+        for i in range(n_st):
+            di, dik = dist[i], dist[i][k]
+            if dik == inf:
+                continue
+            for j in range(n_st):
+                alt = dik + dk[j]
+                if alt < di[j]:
+                    di[j] = alt
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 2. Sort tasks and pre-compute non-overlap list
+    # ------------------------------------------------------------------
+    tasks.sort(key=lambda t: t["start"])
+    n = len(tasks)
+    next_compatible = [n] * n           # earliest task that can follow i
+    starts = [t["start"] for t in tasks]
     for i in range(n):
-        end_time_i = tasks_sorted[i]["end"]
-        for j in range(i + 1, n):
-            if tasks_sorted[j]["start"] >= end_time_i:
-                compatible_tasks[i].append(j)
-    
-    # Dynamic Programming table
-    # dp[i] = (max_score, min_fee, schedule) for optimal solution starting with task i
-    dp = {}
-    
-    def solve(task_idx):
-        # Base case: no more tasks to consider
-        if task_idx == n:
-            return (0, 0, [])
-        
-        # Check if already computed
-        if task_idx in dp:
-            return dp[task_idx]
-        
-        # Option 1: Skip current task
-        best_score, best_fee, best_schedule = solve(task_idx + 1)
-        
-        # Option 2: Take current task and find next compatible tasks
-        curr_task = tasks_sorted[task_idx]
-        curr_station = curr_task["station"]
-        
-        for next_idx in compatible_tasks[task_idx] + [n]:  # Include end state
-            next_score, next_fee, next_schedule = solve(next_idx)
-            
-            # Calculate travel fee from starting station or previous task
-            if next_idx == n:  # Return to starting station
-                travel_fee = distances[curr_station][starting_station]
+        lo, hi = i + 1, n
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if starts[mid] >= tasks[i]["end"]:
+                hi = mid
             else:
-                next_station = tasks_sorted[next_idx]["station"]
-                travel_fee = distances[curr_station][next_station]
-            
-            # Calculate total score and fee
-            total_score = curr_task["score"] + next_score
-            total_fee = travel_fee + next_fee
-            
-            # Update best solution if this is better
-            if (total_score > best_score) or (total_score == best_score and total_fee < best_fee):
-                best_score = total_score
-                best_fee = total_fee
-                best_schedule = [curr_task["name"]] + next_schedule
-        
-        # Memoize and return
-        dp[task_idx] = (best_score, best_fee, best_schedule)
-        return dp[task_idx]
-    
-    # Initialize the calculation with first task options
-    max_score, min_fee, schedule = 0, 0, []
-    
-    # Calculate initial travel fees from starting station to each first possible task
-    for i in range(n):
-        curr_score, curr_fee, curr_schedule = solve(i)
-        
-        # Add initial travel fee from starting_station to first task
-        initial_fee = distances[starting_station][tasks_sorted[i]["station"]]
-        total_fee = initial_fee + curr_fee
-        
-        if (curr_score > max_score) or (curr_score == max_score and total_fee < min_fee):
-            max_score = curr_score
-            min_fee = total_fee
-            schedule = curr_schedule
-    
-    # Prepare response
+                lo = mid + 1
+        next_compatible[i] = lo
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 3. Bottom-up DP  (iterative, no recursion)
+    #    dp[i] = (best_score, min_fee, best_schedule) from task i .. end
+    # ------------------------------------------------------------------
+    dp_score = [0] * (n + 1)
+    dp_fee   = [0] * (n + 1)
+    dp_next  = [-1] * (n + 1)    # -1 means “skip”, >=0 means take that task
+
+    s_idx = idx_of[starting_station]
+
+    for i in range(n - 1, -1, -1):
+        # option 1: skip
+        best_score, best_fee, best_choice = dp_score[i + 1], dp_fee[i + 1], -1
+
+        # option 2: take task i
+        j = next_compatible[i]
+        take_score = tasks[i]["score"] + dp_score[j]
+
+        ui = idx_of[tasks[i]["station"]]
+        travel_fee = (dist[s_idx][ui] if j == n
+                      else dist[ui][idx_of[tasks[j]["station"]]])
+        take_fee = travel_fee + dp_fee[j]
+
+        if (take_score > best_score) or (take_score == best_score and take_fee < best_fee):
+            best_score, best_fee, best_choice = take_score, take_fee, i
+
+        dp_score[i], dp_fee[i], dp_next[i] = best_score, best_fee, best_choice
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 4. Reconstruct optimal schedule
+    # ------------------------------------------------------------------
+    schedule = []
+    i = 0
+    while i < n:
+        if dp_next[i] == -1:
+            i += 1                        # skipped
+        else:
+            schedule.append(tasks[i]["name"])
+            i = next_compatible[i]        # jump to first compatible task
+    # ------------------------------------------------------------------
+
     response = {
-        "max_score": max_score,
-        "min_fee": min_fee,
-        "schedule": schedule
+        "max_score": dp_score[0],
+        "min_fee":  dp_fee[0],
+        "schedule": schedule,
     }
-    
     return jsonify(response), 200
+
 
 if __name__ == "__main__":
     # For local development only

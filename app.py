@@ -260,17 +260,19 @@ def blankety():
 @app.route("/trivia", methods=["GET"])
 def trivia():
     res = {
-        "answers": [ 4,
-    1,
-    2,
-    2,
-    3,
-    4,
-    3,
-    4,
-    2]
+        "answers": [
+            4,  # "Trivia!": How many challenges are there this year, which title ends with an exclamation mark?
+            1,  # "Ticketing Agent": What type of tickets is the ticketing agent handling?
+            2,  # "Blankety Blanks": How many lists and elements per list are included in the dataset you must impute?
+            2,  # "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?
+            3,  # "MST Calculation": What is the average number of nodes in a test case?
+            4,  # "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
+            3,  # "Operation Safeguard": What is the smallest font size in our question?
+            4,  # "Capture The Flag": Which of these are anagrams of the challenge name?
+            4   # "Filler 1": Where has UBS Global Coding Challenge been held before?
+        ]
     }
-    return res
+    return jsonify(res), 200
 
 @app.route("/ticketing-agent", methods=["POST"])
 def ticketing_agent():

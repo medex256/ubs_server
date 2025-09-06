@@ -81,9 +81,79 @@ def cubic_spline(series: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 def impute_series(series: List[Any]) -> List[float]:
-    np_series = np.array([float(x) if x is not None else np.nan for x in series])
-    imputed = linear_interpolation_np(np_series)
-    return imputed.tolist()
+    # Usingsing interpolation, cubic spline, Savitzky-Golay smoothing, and exponential smoothing.
+    np_series = np.array([float(x) if x is not None else np.nan for x in series], dtype=float)
+    n = len(np_series)
+    mask = np.isnan(np_series)
+
+    # Edge cases
+    if n == 0:
+        return []
+    if np.sum(~mask) == 0:
+        return [0.0] * n
+    if np.sum(~mask) == 1:
+        return [float(np_series[~mask][0])] * n
+
+    valid_idx = np.where(~mask)[0]
+    valid_vals = np_series[~mask]
+
+    # linear interpolation
+    grid = np.arange(n)
+    base = np.interp(grid, valid_idx, valid_vals)
+
+    candidates = [base]
+
+    # Cubic spline when enough points
+    if len(valid_vals) >= 4:
+        try:
+            spline = interpolate.CubicSpline(valid_idx, valid_vals, bc_type='natural')
+            spl = spline(grid)
+            candidates.append(np.clip(spl, np.min(valid_vals) - 10 * np.std(valid_vals),
+                                      np.max(valid_vals) + 10 * np.std(valid_vals)))
+        except Exception:
+            pass
+
+    # Savitzky-Golay smoothing
+    try:
+        from scipy.signal import savgol_filter
+        max_win = min(101, n if n % 2 == 1 else n - 1)
+        win = max(5, max_win if max_win % 2 == 1 else max_win - 1)
+        poly = 3 if win > 3 else 2
+        sg = savgol_filter(base, window_length=win, polyorder=min(poly, win - 1))
+        candidates.append(sg)
+    except Exception:
+        pass
+
+    # Simple exponential smoothing of the base
+    def exp_smooth(x: np.ndarray, alpha: float = 0.25) -> np.ndarray:
+        y = x.copy()
+        for i in range(1, len(y)):
+            y[i] = alpha * y[i] + (1 - alpha) * y[i - 1]
+        return y
+
+    candidates.append(exp_smooth(base, alpha=0.25))
+
+    # Evaluation (lower MSE is better)
+    eps = 1e-12
+    mses = []
+    for cand in candidates:
+        mses.append(np.mean((cand[valid_idx] - valid_vals) ** 2) + eps)
+
+    weights = np.array([1.0 / m for m in mses])
+    weights = weights / np.sum(weights)
+
+    final = np.zeros(n, dtype=float)
+    for w, cand in zip(weights, candidates):
+        final += w * cand
+
+    final[valid_idx] = valid_vals
+
+    vmin = np.min(valid_vals) - 5 * np.std(valid_vals)
+    vmax = np.max(valid_vals) + 5 * np.std(valid_vals)
+    final = np.clip(final, vmin, vmax)
+    final = np.nan_to_num(final, nan=0.0, posinf=vmax, neginf=vmin)
+
+    return final.tolist()
 
 
 @app.route("/blankety", methods=["POST"])

@@ -45,21 +45,8 @@ def as_xy(pair: Any) -> Optional[Tuple[float, float]]:
     return x, y
 
 
-def validate_payload(payload: Dict[str, Any]) -> Optional[str]:
-    if not isinstance(payload, dict):
-        return "Payload must be a JSON object."
-    if "customers" not in payload or not isinstance(payload["customers"], list):
-        return "'customers' must be a list."
-    if "concerts" not in payload or not isinstance(payload["concerts"], list):
-        return "'concerts' must be a list."
-    if "priority" not in payload or not isinstance(payload["priority"], dict):
-        return "'priority' must be an object mapping credit card to concert name."
-    return None
-
-
 @app.route("/ticketing-agent", methods=["POST"])
 def ticketing_agent():
-    # Enforce Content-Type: application/json
     content_type = request.headers.get("Content-Type", "")
     if not content_type.lower().startswith("application/json"):
         return bad_request("Unsupported Media Type. Use Content-Type: application/json.", status_code=415)
@@ -68,9 +55,6 @@ def ticketing_agent():
     if data is None:
         return bad_request("Invalid or malformed JSON body.")
 
-    error = validate_payload(data)
-    if error:
-        return bad_request(error)
 
     customers: List[Dict[str, Any]] = data.get("customers", [])
     concerts: List[Dict[str, Any]] = data.get("concerts", [])

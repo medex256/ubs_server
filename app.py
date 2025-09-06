@@ -510,8 +510,14 @@ def investigate():
         data = None
         
     if isinstance(data, dict):
-        if "networks" in data and isinstance(data["networks"], list):
-            networks_data = data["networks"]
+        if "networks" in data:
+            val = data["networks"]
+            if isinstance(val, list):
+                networks_data = val
+            elif isinstance(val, dict):
+                networks_data = [val]
+            else:
+                networks_data = []
         elif "networkId" in data:
             networks_data = [data]
         else:

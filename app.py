@@ -293,73 +293,88 @@ def ticketing_agent():
     return resp
 
 
-def find_extra_channels(network: List[Dict[str, str]]) -> List[Dict[str, str]]:
+
+def find_extra_channels(connections):
     """
-    Find extra channels that can be safely removed from a spy network.
-    The goal is to find ALL edges that can be individually removed while maintaining connectivity.
+    Return edges that can be removed without increasing the number of connected components.
+    - Undirected graph
+    - Self-loops ignored
+    - Parallel edges: each instance is removable
     """
-    if not network:
+    if not isinstance(connections, list) or not connections:
         return []
-    
-    # Build adjacency list and edge list
-    graph = defaultdict(set)
-    edges = []
-    
-    for connection in network:
-        spy1 = connection.get("spy1")
-        spy2 = connection.get("spy2")
-        if spy1 and spy2 and spy1 != spy2:
-            graph[spy1].add(spy2)
-            graph[spy2].add(spy1)
-            edges.append((spy1, spy2))
-    
-    if not graph:
+
+    # Build simple graph adjacency, track original order and multiplicity
+    adjacency = {}  # node -> set(neighbors)
+    original_edges = []  # keep original order
+    multiplicity = {}  # key (a,b) where a<b -> count
+
+    def norm(u, v):
+        return (u, v) if u <= v else (v, u)
+
+    for conn in connections:
+        if not isinstance(conn, dict):
+            continue
+        u = conn.get("spy1")
+        v = conn.get("spy2")
+        if not u or not v or u == v:
+            continue
+
+        original_edges.append((u, v))
+        a, b = norm(u, v)
+        multiplicity[(a, b)] = multiplicity.get((a, b), 0) + 1
+
+        # undirected adjacency
+        if u not in adjacency:
+            adjacency[u] = set()
+        if v not in adjacency:
+            adjacency[v] = set()
+        adjacency[u].add(v)
+        adjacency[v].add(u)
+
+    if not adjacency:
         return []
-    
-    # Find all nodes
-    all_nodes = set(graph.keys())
-    n_nodes = len(all_nodes)
-    
-    # We need at least (n_nodes - 1) edges to maintain connectivity
-    min_edges_needed = n_nodes - 1
-    
-    if len(edges) <= min_edges_needed:
-        return []  # No extra edges to remove
-    
-    def is_connected_without_edge(edges_to_test: List[Tuple[str, str]], exclude_edge: Tuple[str, str]) -> bool:
-        """Check if the graph remains connected when excluding a specific edge."""
-        # Build graph without the excluded edge
-        test_graph = defaultdict(set)
-        for spy1, spy2 in edges_to_test:
-            if (spy1, spy2) != exclude_edge and (spy2, spy1) != exclude_edge:
-                test_graph[spy1].add(spy2)
-                test_graph[spy2].add(spy1)
-        
-        if not test_graph:
-            return False
-        
-        # BFS to check connectivity
-        start_node = next(iter(test_graph.keys()))
-        visited = set()
-        queue = deque([start_node])
-        visited.add(start_node)
-        
-        while queue:
-            node = queue.popleft()
-            for neighbor in test_graph[node]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append(neighbor)
-        
-        return len(visited) == n_nodes
-    
-    # Find all edges that can be safely removed
-    extra_channels = []
-    for spy1, spy2 in edges:
-        if is_connected_without_edge(edges, (spy1, spy2)):
-            extra_channels.append({"spy1": spy1, "spy2": spy2})
-    
-    return extra_channels
+
+    # Tarjan's algorithm to find bridges on the simple graph
+    time_counter = [0]
+    discovery_time = {}
+    low_link = {}
+    parent = {}
+    bridges = set()  # store normalized pairs (a,b)
+
+    def dfs(u):
+        time_counter[0] += 1
+        discovery_time[u] = time_counter[0]
+        low_link[u] = time_counter[0]
+
+        for v in adjacency[u]:
+            if v not in discovery_time:
+                parent[v] = u
+                dfs(v)
+                low_link[u] = min(low_link[u], low_link[v])
+                if low_link[v] > discovery_time[u]:
+                    a, b = norm(u, v)
+                    bridges.add((a, b))
+            elif parent.get(u) != v:
+                low_link[u] = min(low_link[u], discovery_time[v])
+
+    for node in list(adjacency.keys()):
+        if node not in discovery_time:
+            parent[node] = None
+            dfs(node)
+
+    # Select extras from original edges (preserve order)
+    extras = []
+    for u, v in original_edges:
+        a, b = norm(u, v)
+        if multiplicity.get((a, b), 0) > 1:
+            # any parallel instance is removable
+            extras.append({"spy1": u, "spy2": v})
+        elif (a, b) not in bridges:
+            # non-bridge -> on a cycle -> removable
+            extras.append({"spy1": u, "spy2": v})
+
+    return extras
 
 
 @app.route("/investigate", methods=["POST"])
@@ -368,33 +383,28 @@ def investigate():
     Analyze spy networks to find extra channels that can be safely removed.
     """
     data = request.get_json(silent=True)
-    if data is None:
+    if not isinstance(data, dict):
         return jsonify({"networks": []}), 200
-    
+
     networks_data = data.get("networks", [])
     if not isinstance(networks_data, list):
         return jsonify({"networks": []}), 200
-    
+
     result_networks = []
-    
-    for network_data in networks_data:
-        if not isinstance(network_data, dict):
+    for item in networks_data:
+        if not isinstance(item, dict):
             continue
-            
-        network_id = network_data.get("networkId")
-        network = network_data.get("network", [])
-        
-        if not network_id or not isinstance(network, list):
+        network_id = item.get("networkId")
+        network_edges = item.get("network", [])
+        if not network_id or not isinstance(network_edges, list):
             continue
-        
-        # Find extra channels for this network
-        extra_channels = find_extra_channels(network)
-        
+
+        extra_channels = find_extra_channels(network_edges)
         result_networks.append({
             "networkId": network_id,
             "extraChannels": extra_channels
         })
-    
+
     resp = make_response(jsonify({"networks": result_networks}), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
@@ -403,7 +413,6 @@ def investigate():
 @app.route("/")
 def root():
     return "OK", 200
-
 
 
 @app.route("/princess-diaries", methods=["POST"])

@@ -397,7 +397,6 @@ def find_extra_channels(connections):
 
     return extras
 
-
 @app.route("/investigate", methods=["POST"])
 def investigate():
     """
@@ -405,25 +404,15 @@ def investigate():
     Must echo back the exact networkId from the request to avoid 'network not found' errors.
     """
     try:
-        # Parse JSON - be very permissive
-        data = request.get_json(silent=True)
-        if data is None:
-            # Try alternative parsing methods
-            try:
-                import json
-                raw_data = request.get_data(as_text=True)
-                if raw_data:
-                    data = json.loads(raw_data)
-                else:
-                    data = {}
-            except:
-                data = {}
+        # Simplified JSON parsing
+        data = request.get_json(silent=True) or {}
     except Exception:
         data = {}
 
     # Extract networks array - handle all possible structures
     networks_data = data.get("networks", [])
     if isinstance(networks_data, dict):
+        # Convert single object to list (fixes common API usage error)
         networks_data = [networks_data]
     if not isinstance(networks_data, list):
         networks_data = []
@@ -435,15 +424,12 @@ def investigate():
         if not isinstance(item, dict):
             continue
 
-        # Get networkId - be flexible about field names but preserve exact value
-        # According to the spec the key is exactly "networkId"
+        # CRITICAL FIX: Get networkId and preserve it exactly as is
         network_id = item.get("networkId")
         
-        if network_id is None or str(network_id).strip() == "":
+        # Skip items without a networkId
+        if network_id is None:
             continue
-
-        # Preserve networkId exactly as received, but ensure it's a string
-        network_id = str(network_id)
 
         # Get network edges
         network_edges = item.get("network", [])
@@ -457,7 +443,7 @@ def investigate():
             # Fallback: return empty list if algorithm fails
             extra_channels = []
 
-        # Build response - always use "networkId" as the key (as per MD spec)
+        # Build response with exact same networkId
         result_networks.append({
             "networkId": network_id,
             "extraChannels": extra_channels
@@ -467,7 +453,9 @@ def investigate():
     response_data = {"networks": result_networks}
     
     # Return with proper headers
-    return jsonify(response_data)
+    resp = make_response(jsonify(response_data), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
 
 
 @app.route("/")

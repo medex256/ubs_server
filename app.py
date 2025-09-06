@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, make_response
 from math import hypot
-import os
 from typing import Any, Dict, List, Tuple, Optional
 import numpy as np
 from scipy import interpolate, signal
@@ -49,7 +48,6 @@ def as_xy(pair: Any) -> Optional[Tuple[float, float]]:
 
 
 class TimeSeriesImputer:
-    """Robust time series imputation using multiple methods and ensemble approach."""
     
     def __init__(self):
         self.methods = [
@@ -176,7 +174,6 @@ class TimeSeriesImputer:
         return np.clip(result, -1e6, 1e6)
     
     def ensemble_impute(self, series: np.ndarray) -> np.ndarray:
-        """Ensemble approach combining multiple imputation methods."""
         mask = np.isnan(series)
         
         if np.sum(~mask) == 0:

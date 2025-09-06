@@ -903,7 +903,8 @@ def _integrate_scan(state: Dict[str, Any], crow_id: str, scan_result: List[List[
                 continue
             if symbol == "X":
                 continue
-            if symbol == "C" or symbol == "*":
+            # Treat '_' as empty as well (scanner shows '_' in examples for empty)
+            if symbol == "C" or symbol == "*" or symbol == "_":
                 state["known_empty"].add((x, y))
             elif symbol == "W":
                 state["known_walls"].add((x, y))
@@ -1019,10 +1020,22 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # 1) Consider scanning now from any crow with high expected gain
     best_scan = None  # (gain, crow_id)
+    # Multi-crow band bias: encourage each crow to operate in its x-band
+    crow_ids_sorted = sorted(state["crows"].keys())
+    num_crows = max(1, len(crow_ids_sorted))
     for crow_id, (cx, cy) in state["crows"].items():
         if (cx, cy) in scanned_centers:
             continue
         gain = _scan_unknown_count_at((cx, cy), n, state["known_empty"], state["known_walls"])
+        # Apply small band bias
+        try:
+            band_index = crow_ids_sorted.index(crow_id)
+        except ValueError:
+            band_index = 0
+        band_min = int(band_index * n / num_crows)
+        band_max = int((band_index + 1) * n / num_crows) - 1
+        if band_min <= cx <= band_max:
+            gain += 1
         if gain >= scan_threshold:
             if best_scan is None or gain > best_scan[0]:
                 best_scan = (gain, crow_id)
@@ -1052,6 +1065,15 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
             direction = first_dir.get(cell)
             if not direction:
                 continue
+            # Apply band bias based on candidate center x
+            try:
+                band_index = crow_ids_sorted.index(crow_id)
+            except ValueError:
+                band_index = 0
+            band_min = int(band_index * n / num_crows)
+            band_max = int((band_index + 1) * n / num_crows) - 1
+            if band_min <= cell[0] <= band_max:
+                gain += 1
             # Prefer higher gain, then shorter distance
             score = (gain, -d)
             if best_move is None or score > best_move[0]:
@@ -1075,6 +1097,15 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             # Estimate gain if we could scan from that neighbor next turn
             gain = _scan_unknown_count_at((nx, ny), n, state["known_empty"], state["known_walls"])
+            # Apply band bias on neighbor center x
+            try:
+                band_index = crow_ids_sorted.index(crow_id)
+            except ValueError:
+                band_index = 0
+            band_min = int(band_index * n / num_crows)
+            band_max = int((band_index + 1) * n / num_crows) - 1
+            if band_min <= nx <= band_max:
+                gain += 1
             if best_probe is None or gain > best_probe[0]:
                 best_probe = (gain, crow_id, direction)
 

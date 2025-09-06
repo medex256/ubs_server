@@ -4,6 +4,9 @@ from typing import Any, Dict, List, Tuple, Optional, Set
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
+from flask_cors import CORS
+import random
+
 try:
     # When running as a package: `python -m ubs_server.app` or `flask run` with APP=ubs_server.app
     from .utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
@@ -14,6 +17,130 @@ from collections import defaultdict, deque, Counter
 import re, math
 
 app = Flask(__name__)
+CORS(app)
+
+SIZE = 4
+TARGET = 2048
+
+def validate_grid(grid):
+    if not isinstance(grid, list) or len(grid) != SIZE:
+        return False
+    for row in grid:
+        if not isinstance(row, list) or len(row) != SIZE:
+            return False
+        for cell in row:
+            if cell is not None and (not isinstance(cell, int) or cell <= 0):
+                return False
+    return True
+
+def rotate_grid(grid):
+    # 90 deg clockwise
+    return [[grid[SIZE-1-r][c] for r in range(SIZE)] for c in range(SIZE)]
+
+def rotate_times(grid, times):
+    times = (times % 4 + 4) % 4
+    g = grid
+    for _ in range(times):
+        g = rotate_grid(g)
+    return g
+
+def merge_row_left(row):
+    nums = [v for v in row if v is not None]
+    merged = []
+    score_gain = 0
+    i = 0
+    while i < len(nums):
+        if i+1 < len(nums) and nums[i] == nums[i+1]:
+            val = nums[i] * 2
+            merged.append(val)
+            score_gain += val
+            i += 2
+        else:
+            merged.append(nums[i])
+            i += 1
+    while len(merged) < SIZE:
+        merged.append(None)
+    return merged, score_gain
+
+def move_left(grid):
+    out = []
+    moved = False
+    score_gain = 0
+    for r in range(SIZE):
+        before = grid[r]
+        row, gain = merge_row_left(before)
+        out.append(row)
+        score_gain += gain
+        if not moved:
+            if any(row[c] != before[c] for c in range(SIZE)):
+                moved = True
+    return out, moved, score_gain
+
+def apply_move(grid, direction):
+    if direction == 'LEFT':
+        times_in, times_out = 0, 0
+    elif direction == 'UP':
+        times_in, times_out = 3, 1
+    elif direction == 'RIGHT':
+        times_in, times_out = 2, 2
+    elif direction == 'DOWN':
+        times_in, times_out = 1, 3
+    else:
+        raise ValueError('Invalid direction')
+    rotated = rotate_times(grid, times_in)
+    moved_grid, moved, gain = move_left(rotated)
+    restored = rotate_times(moved_grid, times_out)
+    return restored, moved, gain
+
+def empty_cells(grid):
+    return [(r, c) for r in range(SIZE) for c in range(SIZE) if grid[r][c] is None]
+
+def spawn_random_tile(grid):
+    cells = empty_cells(grid)
+    if not cells:
+        return grid
+    r, c = random.choice(cells)
+    val = 2 if random.random() < 0.9 else 4
+    g = [row[:] for row in grid]
+    g[r][c] = val
+    return g
+
+def has_2048(grid):
+    return any(grid[r][c] == TARGET for r in range(SIZE) for c in range(SIZE))
+
+def any_moves_available(grid):
+    if empty_cells(grid):
+        return True
+    for r in range(SIZE):
+        for c in range(SIZE):
+            v = grid[r][c]
+            if r+1 < SIZE and grid[r+1][c] == v:
+                return True
+            if c+1 < SIZE and grid[r][c+1] == v:
+                return True
+    return False
+
+@app.route('/2048', methods=['POST'])
+def play():
+    data = request.get_json(silent=True) or {}
+    grid = data.get('grid')
+    direction = data.get('mergeDirection')
+
+    if not validate_grid(grid):
+        return jsonify(error='Invalid grid'), 400
+    if direction not in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
+        return jsonify(error='Invalid mergeDirection'), 400
+
+    moved_grid, did_move, _ = apply_move(grid, direction)
+    next_grid = spawn_random_tile(moved_grid) if did_move else moved_grid
+
+    end_game = None
+    if has_2048(next_grid):
+        end_game = 'win'
+    elif not any_moves_available(next_grid):
+        end_game = 'lose'
+
+    return jsonify(nextGrid=next_grid, endGame=end_game)
 
 # Import numeral helpers from utils
 # from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
@@ -1351,6 +1478,210 @@ def duolingo_sort():
     ranked_items.sort(key=lambda x: (x[0], rep_rank.get(x[1], 6), x[3]))
     return jsonify({"sortedList": [it[2] for it in ranked_items]}), 200
    
+
+# === THE INK ARCHIVE ===
+
+def _ink_build_graph(goods: List[str], rates: List[Any]):
+    n = len(goods)
+    best_rate: Dict[Tuple[int, int], float] = {}
+    for entry in rates if isinstance(rates, list) else []:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            continue
+        try:
+            u = int(entry[0])
+            v = int(entry[1])
+            r = float(entry[2])
+        except Exception:
+            continue
+        if not (0 <= u < n and 0 <= v < n):
+            continue
+        if r <= 0:
+            continue
+        key = (u, v)
+        if key not in best_rate or r > best_rate[key]:
+            best_rate[key] = r
+    # edges: (u, v, weight=-log(r), rate=r)
+    edges: List[Tuple[int, int, float, float]] = []
+    for (u, v), r in best_rate.items():
+        try:
+            w = -math.log(r)
+        except Exception:
+            continue
+        edges.append((u, v, w, r))
+    return n, edges, best_rate
+
+
+def _ink_product_and_gain_percent(path_idx: List[int], rate_map: Dict[Tuple[int, int], float]) -> Tuple[float, float]:
+    if not path_idx or len(path_idx) < 2:
+        return 1.0, 0.0
+    prod = 1.0
+    for i in range(len(path_idx) - 1):
+        u = path_idx[i]
+        v = path_idx[i + 1]
+        r = rate_map.get((u, v))
+        if r is None or r <= 0:
+            return 0.0, 0.0
+        prod *= r
+    gain_pct = (prod - 1.0) * 100.0
+    return prod, gain_pct
+
+
+def _ink_bellman_ford_any_cycle(n: int, edges: List[Tuple[int, int, float, float]]) -> Optional[List[int]]:
+    # dist initialized to 0 is equivalent to a super source with 0-weight edges
+    dist = [0.0] * n
+    pred = [-1] * n
+    eps = 1e-15
+
+    # Relax edges N-1 times
+    for _ in range(max(0, n - 1)):
+        changed = False
+        for u, v, w, _ in edges:
+            if dist[u] + w < dist[v] - eps:
+                dist[v] = dist[u] + w
+                pred[v] = u
+                changed = True
+        if not changed:
+            break
+
+    # Check for negative cycle
+    neg_vertex = -1
+    for u, v, w, _ in edges:
+        if dist[u] + w < dist[v] - eps:
+            neg_vertex = v
+            break
+    if neg_vertex == -1:
+        return None
+
+    # Move inside the cycle
+    x = neg_vertex
+    for _ in range(n):
+        x = pred[x] if x != -1 else x
+    # Extract cycle by walking predecessors until repeat
+    seen: Dict[int, int] = {}
+    order: List[int] = []
+    cur = x
+    while cur not in seen and cur != -1:
+        seen[cur] = len(order)
+        order.append(cur)
+        cur = pred[cur]
+    if cur == -1:
+        return None
+    start_idx = seen.get(cur, 0)
+    cyc = order[start_idx:]
+    # Reverse to get forward trading direction and close the loop
+    cyc = list(reversed(cyc))
+    cyc.append(cyc[0])
+    return cyc
+
+
+def _ink_max_gain_cycle(n: int, edges: List[Tuple[int, int, float, float]], rate_map: Dict[Tuple[int, int], float]) -> Tuple[Optional[List[int]], float]:
+    # DP over path length up to N to capture any simple cycle
+    best_gain = -1e18
+    best_cycle: Optional[List[int]] = None
+    eps = 1e-12
+
+    # Pre-extract adjacency for reconstruction convenience (not strictly necessary)
+    for s in range(n):
+        # dp[k][v]: min total weight to reach v using exactly k edges starting from s
+        dp = [[float('inf')] * n for _ in range(n + 1)]
+        pred = [[-1] * n for _ in range(n + 1)]
+        dp[0][s] = 0.0
+
+        for k in range(1, n + 1):
+            for u, v, w, _ in edges:
+                if dp[k - 1][u] + w < dp[k][v] - 1e-15:
+                    dp[k][v] = dp[k - 1][u] + w
+                    pred[k][v] = u
+
+            # If we returned to s with a negative total weight, reconstruct cycle
+            if dp[k][s] < -eps:
+                # Reconstruct path of length k ending at s
+                seq: List[int] = []
+                v = s
+                kk = k
+                for _ in range(k):
+                    seq.append(v)
+                    v = pred[kk][v]
+                    if v == -1:
+                        break
+                    kk -= 1
+                seq.append(v)
+                seq.reverse()
+                # Trim to the last cycle at s
+                try:
+                    last_idx = len(seq) - 1
+                    first_s = max(i for i in range(0, last_idx) if seq[i] == s)
+                    cycle_idx = seq[first_s:last_idx + 1]
+                except ValueError:
+                    # Fallback: try to isolate a cycle by last repeated node
+                    seen_pos: Dict[int, int] = {}
+                    cut_i, cut_j = 0, len(seq) - 1
+                    for i, node in enumerate(seq):
+                        if node in seen_pos:
+                            cut_i = seen_pos[node]
+                            cut_j = i
+                        else:
+                            seen_pos[node] = i
+                    cycle_idx = seq[cut_i:cut_j + 1]
+
+                # Ensure closed loop
+                if cycle_idx[0] != cycle_idx[-1]:
+                    cycle_idx.append(cycle_idx[0])
+
+                prod, gain_pct = _ink_product_and_gain_percent(cycle_idx, rate_map)
+                gain = gain_pct  # already *100
+                if prod > 0 and (gain > best_gain + 1e-9 or (abs(gain - best_gain) <= 1e-9 and (best_cycle is None or len(cycle_idx) < len(best_cycle)))):
+                    best_gain = gain
+                    best_cycle = cycle_idx
+
+    if best_cycle is None:
+        return None, 0.0
+    return best_cycle, best_gain
+
+
+@app.route("/The-Ink-Archive", methods=["POST"]) 
+def the_ink_archive():
+    payload = request.get_json(silent=True)
+    if payload is None or not isinstance(payload, list) or len(payload) == 0:
+        return bad_request("Expected a JSON array with two items for Part I and Part II.")
+
+    results: List[Dict[str, Any]] = []
+
+    # Part I: detect any profitable loop
+    part1 = payload[0] if len(payload) >= 1 else {}
+    goods1 = part1.get("goods", []) if isinstance(part1, dict) else []
+    rates1 = part1.get("rates", []) if isinstance(part1, dict) else []
+    n1, edges1, rate_map1 = _ink_build_graph(goods1 if isinstance(goods1, list) else [], rates1)
+
+    path1_idx = _ink_bellman_ford_any_cycle(n1, edges1) if n1 > 0 else None
+    if path1_idx:
+        prod1, gain1 = _ink_product_and_gain_percent(path1_idx, rate_map1)
+        path1_names = [goods1[i] for i in path1_idx]
+        results.append({"path": path1_names, "gain": gain1})
+    else:
+        results.append({"path": [], "gain": 0.0})
+
+    # Part II: find the maximum gain cycle
+    part2 = payload[1] if len(payload) >= 2 else {}
+    goods2 = part2.get("goods", []) if isinstance(part2, dict) else []
+    rates2 = part2.get("rates", []) if isinstance(part2, dict) else []
+    n2, edges2, rate_map2 = _ink_build_graph(goods2 if isinstance(goods2, list) else [], rates2)
+
+    if n2 > 0:
+        best_cycle2, best_gain2 = _ink_max_gain_cycle(n2, edges2, rate_map2)
+        if best_cycle2:
+            path2_names = [goods2[i] for i in best_cycle2]
+            results.append({"path": path2_names, "gain": best_gain2})
+        else:
+            results.append({"path": [], "gain": 0.0})
+    else:
+        results.append({"path": [], "gain": 0.0})
+
+    resp = make_response(jsonify(results), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
 if __name__ == "__main__":
     # For local development only
     app.run()
+    # app.run(host='0.0.0.0', port=3000, debug=False)

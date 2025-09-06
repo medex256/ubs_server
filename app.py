@@ -454,85 +454,66 @@ def bad_request(message: str, details: Optional[Dict[str, Any]] = None, status_c
     resp.headers["Content-Type"] = "application/json"
     return resp
 
+def merge_bookings(bookings: List[List[int]]) -> List[List[int]]:
+    if not bookings:
+        return []
+
+    bookings.sort(key=lambda x: (x[0], x[1]))
+    merged = []
+    cur_start, cur_end = bookings[0]
+
+    for s, e in bookings[1:]:
+        if s <= cur_end:
+            if e > cur_end:
+                cur_end = e
+        else:
+            merged.append([cur_start, cur_end])
+            cur_start, cur_end = s, e
+
+    merged.append([cur_start, cur_end])
+    return merged
+
+def min_boats_required(bookings: List[List[int]]) -> int:
+    if not bookings:
+        return 0
+
+    starts = sorted(s for s, _ in bookings)
+    ends = sorted(e for _, e in bookings)
+
+    i = j = 0
+    used = max_used = 0
+    n = len(bookings)
+
+    while i < n and j < n:
+        if starts[i] < ends[j]:
+            used += 1
+            if used > max_used:
+                max_used = used
+            i += 1
+        else:
+            used -= 1
+            j += 1
+
+    return max_used
 
 @app.route("/sailing-club", methods=["POST"])
-def sailing_club_submission():
-    data = request.get_json(silent=True) or {}
+def sailing_club():
+    data = request.get_json(force=True)
     test_cases = data.get("testCases", [])
-    if not isinstance(test_cases, list):
-        return bad_request("Expected 'testCases' to be a list.")
-
-    def parse_slots(slots_raw):
-        valid = []
-        if not isinstance(slots_raw, list):
-            return valid
-        for pair in slots_raw:
-            if isinstance(pair, (list, tuple)) and len(pair) == 2:
-                try:
-                    s = int(pair[0])
-                    e = int(pair[1])
-                    # Only accept valid intervals with positive duration
-                    # Also check bounds: 0 <= hours <= 4096
-                    if s < e and 0 <= s <= 4096 and 0 <= e <= 4096:
-                        valid.append([s, e])
-                except (ValueError, TypeError, OverflowError):
-                    # Skip invalid numeric values
-                    continue
-        return valid
-
-    def merge_slots(slots):
-        if not slots:
-            return []
-        slots.sort(key=lambda x: x[0])
-        merged = [slots[0][:]]
-        for s, e in slots[1:]:
-            ls, le = merged[-1]
-            if s <= le:
-                if e > le:
-                    merged[-1][1] = e
-            else:
-                merged.append([s, e])
-        return merged
-
-    def min_boats(slots):
-        if not slots:
-            return 0
-        events = []
-        for s, e in slots:
-            events.append((s, 1))
-            events.append((e, -1))
-        # End (-1) before start (+1) at the same time
-        events.sort(key=lambda t: (t[0], t[1]))
-        cur = 0
-        ans = 0
-        for _, d in events:
-            cur += d
-            if cur > ans:
-                ans = cur
-        return ans
-
     solutions = []
-    for case in test_cases:
-        if not isinstance(case, dict):
-            continue
-        cid = case.get("id")
-        # Always process every test case, even if id is missing/invalid
-        # Convert id to string, handling None, 0, empty string, etc.
-        case_id = str(cid) if cid is not None else ""
-        
-        raw_slots = case.get("input", [])
-        slots = parse_slots(raw_slots)
-        merged = merge_slots(slots)
-        boats = min_boats(slots)
+
+    for tc in test_cases:
+        tc_id = tc.get("id")
+        bookings = [[int(a), int(b)] for a, b in tc.get("input", [])]
+        merged = merge_bookings(bookings)
+        min_boats = min_boats_required(bookings)
         solutions.append({
-            "id": case_id,
+            "id": tc_id,
             "sortedMergedSlots": merged,
-            "minBoatsNeeded": boats,
+            "minBoatsNeeded": min_boats
         })
 
-    resp = make_response(jsonify({"solutions": solutions}), 200)
-    resp.headers["Content-Type"] = "application/json"
-    return resp
+    return jsonify({"solutions": solutions})
 
 @app.errorhandler(404)
 def handle_404(e):

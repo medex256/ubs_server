@@ -120,27 +120,317 @@ def any_moves_available(grid):
                 return True
     return False
 
+# --- 2048 advanced logic helpers (place near the top of app.py, before the /2048 route) ---
+
+def _is_empty(cell):
+    return cell is None
+
+def _is_zero_tile(cell):
+    return cell == '0'
+
+def _is_star2_tile(cell):
+    return cell == '*2'
+
+def _is_number_tile(cell):
+    return isinstance(cell, int) and cell >= 1
+
+def _adv_validate_grid(grid, size):
+    if not isinstance(grid, list) or len(grid) != size:
+        return False
+    for row in grid:
+        if not isinstance(row, list) or len(row) != size:
+            return False
+        for cell in row:
+            if not (
+                cell is None
+                or (isinstance(cell, str) and cell in ('0', '*2'))
+                or _is_number_tile(cell)
+            ):
+                return False
+    return True
+
+def _adv_rotate_grid(grid):
+    n = len(grid)
+    out = [[None] * n for _ in range(n)]
+    for r in range(n):
+        for c in range(n):
+            out[c][n - 1 - r] = grid[r][c]
+    return out
+
+def _adv_rotate_times(grid, times):
+    k = ((times % 4) + 4) % 4
+    g = grid
+    for _ in range(k):
+        g = _adv_rotate_grid(g)
+    return g
+
+def _adv_deep_clone(grid):
+    return [row[:] for row in grid]
+
+def _adv_empty_cells(grid):
+    cells = []
+    n = len(grid)
+    for r in range(n):
+        for c in range(n):
+            if _is_empty(grid[r][c]):
+                cells.append((r, c))
+    return cells
+
+def _adv_spawn_random_tile(grid):
+    empties = _adv_empty_cells(grid)
+    if not empties:
+        return grid
+    r, c = random.choice(empties)
+    val = 2 if random.random() < 0.9 else 4
+    g = _adv_deep_clone(grid)
+    g[r][c] = val
+    return g
+
+def _adv_has_target(grid, target=2048):
+    for row in grid:
+        for cell in row:
+            if cell == target:
+                return True
+    return False
+
+def _adv_any_moves_available_classic(grid):
+    n = len(grid)
+    if _adv_empty_cells(grid):
+        return True
+    for r in range(n):
+        for c in range(n):
+            v = grid[r][c]
+            if r + 1 < n and v == grid[r + 1][c]:
+                return True
+            if c + 1 < n and v == grid[r][c + 1]:
+                return True
+    return False
+
+def _adv_merge_row_left_classic(row):
+    n = len(row)
+    nums = [v for v in row if _is_number_tile(v)]
+    merged = []
+    i = 0
+    while i < len(nums):
+        if i + 1 < len(nums) and nums[i] == nums[i + 1]:
+            merged.append(nums[i] * 2)
+            i += 2
+        else:
+            merged.append(nums[i])
+            i += 1
+    while len(merged) < n:
+        merged.append(None)
+    return merged
+
+def _adv_move_row_left_advanced(row, options):
+    # options: {'zeroBlocks': bool, 'star2': bool, 'oneRule': bool}
+    n = len(row)
+    out = [None] * n
+    moved = False
+
+    # Identify blocker positions (zeros). Mirrors the JS behavior (zeros act as blockers always here).
+    zero_positions = [i for i, v in enumerate(row) if _is_zero_tile(v)]
+    for z in zero_positions:
+        out[z] = '0'
+
+    # Segments split by zeros
+    segments = []
+    start = 0
+    for z in zero_positions:
+        if z > start:
+            segments.append((start, z - 1))
+        start = z + 1
+    if start <= n - 1:
+        segments.append((start, n - 1))
+
+    def set_if_moved():
+        nonlocal moved
+        for i in range(n):
+            if row[i] != out[i]:
+                moved = True
+                return
+
+    for L, R in segments:
+        items = []
+        for i in range(L, R + 1):
+            v = row[i]
+            if v is not None and not _is_zero_tile(v):
+                items.append(v)
+
+        write = L
+        read = 0
+        while read < len(items):
+            cur = items[read]
+
+            # Star2 acts on the tile immediately in front (left) if present
+            if _is_star2_tile(cur) and options.get('star2', False):
+                front_idx = write - 1
+                if L <= front_idx and out[front_idx] is not None and not _is_zero_tile(out[front_idx]):
+                    front = out[front_idx]
+                    if _is_number_tile(front):
+                        out[front_idx] = front * 2
+                        read += 1
+                        continue
+                    elif _is_star2_tile(front):
+                        out[write] = cur
+                        write += 1
+                        read += 1
+                        continue
+                    else:
+                        out[write] = cur
+                        write += 1
+                        read += 1
+                        continue
+                else:
+                    out[write] = cur
+                    write += 1
+                    read += 1
+                    continue
+
+            if _is_number_tile(cur):
+                nxt = items[read + 1] if read + 1 < len(items) else None
+
+                # next is star2: star2 doubles current, consume both
+                if _is_star2_tile(nxt) and options.get('star2', False):
+                    out[write] = cur * 2
+                    write += 1
+                    read += 2
+                    continue
+
+                # classic-like merge with next number
+                if _is_number_tile(nxt):
+                    same = (cur == nxt)
+                    both_ones = (options.get('oneRule', False) and cur == 1 and nxt == 1)
+                    if same and not both_ones:
+                        out[write] = cur * 2
+                        write += 1
+                        read += 2
+                        continue
+
+                out[write] = cur
+                write += 1
+                read += 1
+                continue
+
+            # Fallback: place unknown or star2 without star2 mode
+            out[write] = cur
+            write += 1
+            read += 1
+
+    set_if_moved()
+    return {'row': out, 'moved': moved}
+
+def _adv_move_left_classic(grid):
+    n = len(grid)
+    out = []
+    moved = False
+    for r in range(n):
+        before = grid[r]
+        nums_only = [v if _is_number_tile(v) else None for v in before]
+        after = _adv_merge_row_left_classic(nums_only)
+        out.append(after)
+        if not moved and any(before[c] != after[c] for c in range(n)):
+            moved = True
+    return {'grid': out, 'moved': moved}
+
+def _adv_move_left_advanced(grid, options):
+    n = len(grid)
+    out = []
+    moved_flag = False
+    for r in range(n):
+        res = _adv_move_row_left_advanced(grid[r], options)
+        out.append(res['row'])
+        moved_flag = moved_flag or res['moved']
+    return {'grid': out, 'moved': moved_flag}
+
+def _adv_apply_move(grid, direction, mode_options):
+    if direction == 'LEFT':
+        times_in, times_out = 0, 0
+    elif direction == 'UP':
+        times_in, times_out = 3, 1
+    elif direction == 'RIGHT':
+        times_in, times_out = 2, 2
+    elif direction == 'DOWN':
+        times_in, times_out = 1, 3
+    else:
+        raise ValueError('Invalid direction')
+
+    rotated = _adv_rotate_times(grid, times_in)
+    if mode_options.get('classicOnly', False):
+        moved = _adv_move_left_classic(rotated)
+    else:
+        moved = _adv_move_left_advanced(rotated, mode_options)
+    restored = _adv_rotate_times(moved['grid'], times_out)
+    return {'grid': restored, 'moved': moved['moved']}
+
+def _adv_any_moves_available_advanced(grid, options):
+    for d in ('LEFT', 'RIGHT', 'UP', 'DOWN'):
+        res = _adv_apply_move(grid, d, options)
+        if res['moved']:
+            return True
+    return False
+
+def _adv_get_mode_options(mode):
+    m = (mode or 'classic').lower()
+    if m == 'classic':
+        return {'classicOnly': True}
+    if m == 'bigger':
+        return {'classicOnly': True}  # bigger only changes size
+    if m == 'zero':
+        return {'classicOnly': False, 'zeroBlocks': True, 'star2': False, 'oneRule': False}
+    if m == 'star2':
+        return {'classicOnly': False, 'zeroBlocks': False, 'star2': True, 'oneRule': False}
+    if m == 'all':
+        return {'classicOnly': False, 'zeroBlocks': True, 'star2': True, 'oneRule': True}
+    return {'classicOnly': True}
+
+# --- Replace your existing /2048 route with this version ---
+
 @app.route('/2048', methods=['POST'])
 def play():
-    data = request.get_json(silent=True) or {}
-    grid = data.get('grid')
-    direction = data.get('mergeDirection')
+    try:
+        body = request.get_json(silent=True) or {}
+        q = request.args or {}
 
-    if not validate_grid(grid):
-        return jsonify(error='Invalid grid'), 400
-    if direction not in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
-        return jsonify(error='Invalid mergeDirection'), 400
+        merge_direction = body.get('mergeDirection')
+        mode = str(((body.get('options') or {}).get('mode') or q.get('mode') or 'classic'))
+        size_raw = (body.get('options') or {}).get('size', q.get('size', 4))
+        try:
+            size = int(size_raw)
+        except Exception:
+            return jsonify(error='Invalid size (2..10)'), 400
 
-    moved_grid, did_move, _ = apply_move(grid, direction)
-    next_grid = spawn_random_tile(moved_grid) if did_move else moved_grid
+        if merge_direction not in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
+            return jsonify(error='Invalid mergeDirection'), 400
+        if not (2 <= size <= 10):
+            return jsonify(error='Invalid size (2..10)'), 400
 
-    end_game = None
-    if has_2048(next_grid):
-        end_game = 'win'
-    elif not any_moves_available(next_grid):
-        end_game = 'lose'
+        grid = body.get('grid')
+        if not _adv_validate_grid(grid, size):
+            return jsonify(error='Invalid grid for given size'), 400
 
-    return jsonify(nextGrid=next_grid, endGame=end_game)
+        options = _adv_get_mode_options(mode)
+        before = _adv_deep_clone(grid)
+        res = _adv_apply_move(before, merge_direction, options)
+        after, moved = res['grid'], res['moved']
+
+        next_grid = after
+        if moved:
+            next_grid = _adv_spawn_random_tile(after)
+
+        end_game = None
+        target = 2048
+        if _adv_has_target(next_grid, target):
+            end_game = 'win'
+        else:
+            can_move = _adv_any_moves_available_classic(next_grid) if options.get('classicOnly', False) \
+                       else _adv_any_moves_available_advanced(next_grid, options)
+            if not can_move:
+                end_game = 'lose'
+
+        return jsonify(nextGrid=next_grid, endGame=end_game)
+    except Exception:
+        return jsonify(error='Internal error'), 500
 
 # Import numeral helpers from utils
 # from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
@@ -1629,6 +1919,31 @@ def _ink_max_gain_cycle(n: int, edges: List[Tuple[int, int, float, float]], rate
     return best_cycle, best_gain
 
 
+def _ink_canonicalize_cycle(path_idx: List[int]) -> List[int]:
+    # Ensure closed loop and rotate to start at minimal node index for determinism
+    if not path_idx or len(path_idx) < 2:
+        return path_idx
+    cycle = path_idx[:]
+    if cycle[0] != cycle[-1]:
+        cycle.append(cycle[0])
+    # Work on unique part (exclude last duplicate)
+    core = cycle[:-1]
+    # Find position of minimal index
+    min_idx = min(core)
+    positions = [i for i, v in enumerate(core) if v == min_idx]
+    # Choose the rotation whose second element is minimal as tiebreaker
+    best_rot = None
+    best_key = None
+    for pos in positions:
+        rot = core[pos:] + core[:pos]
+        key = (rot[0], rot[1] if len(rot) > 1 else -1, len(rot))
+        if best_key is None or key < best_key:
+            best_key = key
+            best_rot = rot
+    best_rot.append(best_rot[0])
+    return best_rot
+
+
 @app.route("/The-Ink-Archive", methods=["POST"]) 
 def the_ink_archive():
     payload = request.get_json(silent=True)
@@ -1643,11 +1958,15 @@ def the_ink_archive():
     rates1 = part1.get("rates", []) if isinstance(part1, dict) else []
     n1, edges1, rate_map1 = _ink_build_graph(goods1 if isinstance(goods1, list) else [], rates1)
 
-    path1_idx = _ink_bellman_ford_any_cycle(n1, edges1) if n1 > 0 else None
-    if path1_idx:
-        prod1, gain1 = _ink_product_and_gain_percent(path1_idx, rate_map1)
-        path1_names = [goods1[i] for i in path1_idx]
-        results.append({"path": path1_names, "gain": gain1})
+    if n1 > 0:
+        # For Part I, return the most profitable cycle as well (stable and aligns with samples)
+        best_cycle1, best_gain1 = _ink_max_gain_cycle(n1, edges1, rate_map1)
+        if best_cycle1:
+            can1 = _ink_canonicalize_cycle(best_cycle1)
+            path1_names = [goods1[i] for i in can1]
+            results.append({"path": path1_names, "gain": best_gain1})
+        else:
+            results.append({"path": [], "gain": 0.0})
     else:
         results.append({"path": [], "gain": 0.0})
 
@@ -1660,7 +1979,8 @@ def the_ink_archive():
     if n2 > 0:
         best_cycle2, best_gain2 = _ink_max_gain_cycle(n2, edges2, rate_map2)
         if best_cycle2:
-            path2_names = [goods2[i] for i in best_cycle2]
+            can2 = _ink_canonicalize_cycle(best_cycle2)
+            path2_names = [goods2[i] for i in can2]
             results.append({"path": path2_names, "gain": best_gain2})
         else:
             results.append({"path": [], "gain": 0.0})
@@ -1671,7 +1991,116 @@ def the_ink_archive():
     resp.headers["Content-Type"] = "application/json"
     return resp
 
+@app.route("/the-mages-gambit", methods=["POST"])
+def mages_gambit():
+    """
+    Calculate the minimum time Klein needs to defeat all undead and join the expedition.
+    
+    Expected input format:
+    [
+        {
+            "intel": [[front, mp_cost], ...],  # Sequence of undead attacks
+            "reserve": int,                     # Maximum mana capacity
+            "fronts": int,                     # Number of fronts (unused in calculation)
+            "stamina": int                     # Number of spells before cooldown required
+        },
+        ...
+    ]
+    
+    Returns:
+    [
+        {"time": int},  # Minimum time in minutes
+        ...
+    ]
+    """
+    try:
+        payload = request.get_json()
+        if not isinstance(payload, list):
+            return jsonify({"error": "Expected array of test cases"}), 400
+        
+        results = []
+        
+        for test_case in payload:
+            if not isinstance(test_case, dict):
+                return jsonify({"error": "Each test case must be an object"}), 400
+            
+            intel = test_case.get("intel", [])
+            reserve = test_case.get("reserve", 0)
+            fronts = test_case.get("fronts", 0)  # Not used in calculation but validated
+            stamina = test_case.get("stamina", 0)
+            
+            # Validate inputs
+            if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int):
+                return jsonify({"error": "Invalid input types"}), 400
+            
+            if reserve <= 0 or stamina <= 0:
+                return jsonify({"error": "Reserve and stamina must be positive"}), 400
+            
+            for attack in intel:
+                if not isinstance(attack, list) or len(attack) != 2:
+                    return jsonify({"error": "Each intel entry must be [front, mp_cost]"}), 400
+                front, mp_cost = attack
+                if not isinstance(front, int) or not isinstance(mp_cost, int):
+                    return jsonify({"error": "Front and MP cost must be integers"}), 400
+                if front < 1 or front > fronts:
+                    return jsonify({"error": f"Front must be between 1 and {fronts}"}), 400
+                if mp_cost < 1 or mp_cost > reserve:
+                    return jsonify({"error": f"MP cost must be between 1 and {reserve}"}), 400
+            
+            # Calculate minimum time
+            min_time = calculate_mage_combat_time(intel, reserve, stamina)
+            results.append({"time": min_time})
+        
+        return jsonify(results), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def calculate_mage_combat_time(intel, reserve, stamina):
+    """
+    Calculate the minimum time needed for Klein to defeat all undead.
+    
+    Args:
+        intel: List of [front, mp_cost] representing undead attacks in sequence
+        reserve: Maximum mana capacity
+        stamina: Number of spells that can be cast before cooldown required
+    
+    Returns:
+        int: Minimum time in minutes
+    """
+    current_mp = reserve
+    current_stamina = stamina
+    total_time = 0
+    last_front = None
+    
+    for front, mp_cost in intel:
+        # Check if we need cooldown before this attack
+        had_cooldown = False
+        if current_mp < mp_cost or current_stamina < 1:
+            # Force cooldown to recover resources
+            total_time += 10  # Cooldown takes 10 minutes
+            current_mp = reserve
+            current_stamina = stamina
+            had_cooldown = True
+        
+        # Execute the attack
+        # If same front as last attack AND no cooldown happened, extend AOE (0 extra time)
+        if front == last_front and not had_cooldown:
+            spell_time = 0  # Extend AOE, no extra time
+        else:
+            spell_time = 10  # New target or after cooldown
+            
+        total_time += spell_time
+        current_mp -= mp_cost
+        current_stamina -= 1
+        last_front = front
+    
+    # Must end with cooldown to be ready for expedition
+    total_time += 10
+    
+    return total_time
+
 if __name__ == "__main__":
     # For local development only
-    app.run()
-    # app.run(host='0.0.0.0', port=3000, debug=False)
+    # app.run()
+    app.run(host='0.0.0.0', port=3000, debug=False)

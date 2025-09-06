@@ -420,9 +420,10 @@ def princess_diaries():
     if not tasks:
         return jsonify({"max_score": 0, "min_fee": 0, "schedule": []}), 200
     
-    # ------------------------------------------------------------------
-    # 1. Build station mapping and distance matrix (FAST)
-    # ------------------------------------------------------------------
+    # Efficient preprocessing
+    tasks.sort(key=lambda t: t["start"])
+    
+    # Build compact distance matrix
     stations = {starting_station}
     for t in tasks:
         stations.add(t["station"])
@@ -433,8 +434,7 @@ def princess_diaries():
     idx_of = {s: i for i, s in enumerate(stations)}
     n_st = len(stations)
     
-    inf = float("inf")
-    dist = [[inf] * n_st for _ in range(n_st)]
+    dist = [[float('inf')] * n_st for _ in range(n_st)]
     for i in range(n_st):
         dist[i][i] = 0
     
@@ -443,112 +443,78 @@ def princess_diaries():
         fee = r.get("fee", 0)
         if u in idx_of and v in idx_of:
             iu, iv = idx_of[u], idx_of[v]
-            if fee < dist[iu][iv]:
-                dist[iu][iv] = dist[iv][iu] = fee
+            dist[iu][iv] = dist[iv][iu] = min(dist[iu][iv], fee)
     
     # Floyd-Warshall
     for k in range(n_st):
         for i in range(n_st):
             for j in range(n_st):
-                if dist[i][k] + dist[k][j] < dist[i][j]:
-                    dist[i][j] = dist[i][k] + dist[k][j]
+                dist[i][j] = min(dist[i][j], dist[i][k] + dist[k][j])
     
-    # ------------------------------------------------------------------
-    # 2. Sort tasks and find compatible successors
-    # ------------------------------------------------------------------
-    tasks.sort(key=lambda t: t["start"])
-    n = len(tasks)
+    starting_idx = idx_of[starting_station]
     
-    # Pre-compute all compatible successors for each task
-    compatible = [[] for _ in range(n)]
-    for i in range(n):
-        for j in range(i + 1, n):
-            if tasks[j]["start"] >= tasks[i]["end"]:
-                compatible[i].append(j)
+    # Optimized memoization with sys.setrecursionlimit if needed
+    import sys
+    sys.setrecursionlimit(10000)
     
-    s_idx = idx_of[starting_station]
+    memo = {}
     
-    # ------------------------------------------------------------------
-    # 3. Corrected iterative DP - explore ALL paths
-    # ------------------------------------------------------------------
-    # dp[i] = (max_score, min_fee, next_task) for optimal solution starting from task i
-    dp_score = [0] * (n + 1)  # n is sentinel for "end"
-    dp_fee = [0] * (n + 1)
-    dp_next = [n] * (n + 1)
-    
-    for i in range(n - 1, -1, -1):
-        # Option 1: Skip task i
-        best_score = dp_score[i + 1]
-        best_fee = dp_fee[i + 1]
-        best_next = i + 1  # skip to next task
+    def dp(index, last_task_idx):
+        if index == len(tasks):
+            return_fee = 0
+            if last_task_idx != -1:
+                last_idx = idx_of[tasks[last_task_idx]["station"]]
+                return_fee = dist[last_idx][starting_idx]
+            return (0, return_fee, [])
         
-        # Option 2: Take task i and try all compatible successors
-        ui = idx_of[tasks[i]["station"]]
-        curr_score = tasks[i]["score"]
+        key = (index, last_task_idx)
+        if key in memo:
+            return memo[key]
         
-        # Try ending here (go directly to starting station)
-        end_fee = dist[ui][s_idx] + dp_fee[n]  # return home
-        total_score = curr_score + dp_score[n]
-        total_fee = end_fee
+        # Skip option
+        skip_result = dp(index + 1, last_task_idx)
         
-        if total_score > best_score or (total_score == best_score and total_fee < best_fee):
-            best_score, best_fee, best_next = total_score, total_fee, n
+        # Take option (if valid)
+        take_result = (0, float('inf'), [])
+        curr_task = tasks[index]
         
-        # Try each compatible successor
-        for j in compatible[i]:
-            uj = idx_of[tasks[j]["station"]]
-            travel_fee = dist[ui][uj]  # cost to go to next task
+        can_take = True
+        if last_task_idx != -1:
+            if tasks[last_task_idx]["end"] > curr_task["start"]:
+                can_take = False
+        
+        if can_take:
+            curr_idx = idx_of[curr_task["station"]]
             
-            successor_score = dp_score[j]
-            successor_fee = dp_fee[j]
+            if last_task_idx == -1:
+                travel_fee = dist[starting_idx][curr_idx]
+            else:
+                prev_idx = idx_of[tasks[last_task_idx]["station"]]
+                travel_fee = dist[prev_idx][curr_idx]
             
-            total_score = curr_score + successor_score
-            total_fee = travel_fee + successor_fee
+            next_score, next_fee, next_schedule = dp(index + 1, index)
             
-            if total_score > best_score or (total_score == best_score and total_fee < best_fee):
-                best_score, best_fee, best_next = total_score, total_fee, j
+            take_score = curr_task["score"] + next_score
+            take_fee = travel_fee + next_fee
+            take_schedule = [curr_task["name"]] + next_schedule
+            take_result = (take_score, take_fee, take_schedule)
         
-        dp_score[i] = best_score
-        dp_fee[i] = best_fee
-        dp_next[i] = best_next
-    
-    # ------------------------------------------------------------------
-    # 4. Find best starting task (including initial travel cost)
-    # ------------------------------------------------------------------
-    max_score = 0
-    min_fee = 0
-    best_start = n  # no tasks
-    
-    # Option: Take no tasks
-    if best_start == n:
-        pass  # already set above
-    
-    # Try starting with each task
-    for i in range(n):
-        ui = idx_of[tasks[i]["station"]]
-        initial_travel = dist[s_idx][ui]  # cost from starting station to first task
+        # Choose better option
+        if take_result[0] > skip_result[0] or (take_result[0] == skip_result[0] and take_result[1] < skip_result[1]):
+            result = take_result
+        else:
+            result = skip_result
         
-        total_score = dp_score[i]
-        total_fee = initial_travel + dp_fee[i]
-        
-        if total_score > max_score or (total_score == max_score and total_fee < min_fee):
-            max_score, min_fee, best_start = total_score, total_fee, i
+        memo[key] = result
+        return result
     
-    # ------------------------------------------------------------------
-    # 5. Reconstruct schedule
-    # ------------------------------------------------------------------
-    schedule = []
-    current = best_start
-    while current < n:
-        schedule.append(tasks[current]["name"])
-        current = dp_next[current]
+    max_score, min_fee, schedule = dp(0, -1)
     
-    response = {
+    return jsonify({
         "max_score": max_score,
         "min_fee": min_fee,
         "schedule": schedule
-    }
-    return jsonify(response), 200
+    }), 200
 
 
    

@@ -545,6 +545,295 @@ def princess_diaries():
 
     return jsonify({"max_score": max_score, "min_fee": min_fee, "schedule": schedule}), 200
 
+
+
+# === FOG OF WALL ===
+
+from typing import Tuple
+
+# Per-(challenger_id, game_id) state
+_fog_state: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+def _in_bounds(x: int, y: int, n: int) -> bool:
+    return 0 <= x < n and 0 <= y < n
+
+def _neighbors4(x: int, y: int, n: int):
+    if y - 1 >= 0: yield (x, y - 1, "N")
+    if y + 1 < n: yield (x, y + 1, "S")
+    if x + 1 < n: yield (x + 1, y, "E")
+    if x - 1 >= 0: yield (x - 1, y, "W")
+
+def _dir_to_vec(direction: str) -> Tuple[int, int]:
+    # Grid: (0,0) is top-left; N: y-1, S: y+1, E: x+1, W: x-1
+    return {
+        "N": (0, -1),
+        "S": (0, 1),
+        "E": (1, 0),
+        "W": (-1, 0),
+    }.get(direction, (0, 0))
+
+def _scan_unknown_count_at(center: Tuple[int, int], n: int, known_empty: Set[Tuple[int, int]], known_walls: Set[Tuple[int, int]]) -> int:
+    cx, cy = center
+    unknown = 0
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            x, y = cx + dx, cy + dy
+            if not _in_bounds(x, y, n):
+                continue
+            if (x, y) in known_empty or (x, y) in known_walls:
+                continue
+            unknown += 1
+    return unknown
+
+def _integrate_scan(state: Dict[str, Any], crow_id: str, scan_result: List[List[str]]):
+    n = state["length"]
+    cx, cy = state["crows"][crow_id]
+
+    # The scan_result is 5x5 centered at crow, rows top-to-bottom, cols left-to-right
+    for r in range(5):
+        for c in range(5):
+            symbol = scan_result[r][c]
+            x = cx + (c - 2)
+            y = cy + (r - 2)
+            if not _in_bounds(x, y, n):
+                continue
+            if symbol == "X":
+                continue
+            if symbol == "C" or symbol == "*":
+                state["known_empty"].add((x, y))
+            elif symbol == "W":
+                state["known_walls"].add((x, y))
+    # Always ensure the crow's current cell is empty
+    state["known_empty"].add((cx, cy))
+
+def _process_previous_action(state: Dict[str, Any], previous_action: Dict[str, Any]):
+    if not previous_action:
+        return
+    action = previous_action.get("your_action")
+    crow_id = previous_action.get("crow_id")
+    if not crow_id or crow_id not in state["crows"]:
+        return
+
+    if action == "move":
+        direction = previous_action.get("direction")
+        move_result = previous_action.get("move_result") or []
+        if not isinstance(move_result, list) or len(move_result) != 2:
+            return
+        old_x, old_y = state["crows"][crow_id]
+        dx, dy = _dir_to_vec(direction or "")
+        intended = (old_x + dx, old_y + dy)
+        new_x, new_y = int(move_result[0]), int(move_result[1])
+
+        # If position unchanged, we hit a wall (intended cell is a wall)
+        if (new_x, new_y) == (old_x, old_y):
+            ix, iy = intended
+            n = state["length"]
+            if _in_bounds(ix, iy, n):
+                state["known_walls"].add((ix, iy))
+        else:
+            # Successful move: mark destination as empty
+            state["known_empty"].add((new_x, new_y))
+
+        # Update crow position to move_result (unchanged if hit wall)
+        state["crows"][crow_id] = (new_x, new_y)
+
+    elif action == "scan":
+        scan_result = previous_action.get("scan_result")
+        if isinstance(scan_result, list) and len(scan_result) == 5:
+            _integrate_scan(state, crow_id, scan_result)
+
+def _bfs_first_step_direction(state: Dict[str, Any], start: Tuple[int, int]) -> Tuple[Dict[Tuple[int, int], str], Dict[Tuple[int, int], int]]:
+    # BFS only through known empty cells
+    n = state["length"]
+    known_empty = state["known_empty"]
+    queue = deque()
+    visited = set()
+    first_dir: Dict[Tuple[int, int], str] = {}
+    dist: Dict[Tuple[int, int], int] = {}
+
+    queue.append((start[0], start[1]))
+    visited.add(start)
+    dist[start] = 0
+
+    while queue:
+        x, y = queue.popleft()
+        for nx, ny, dir_label in _neighbors4(x, y, n):
+            if (nx, ny) in visited:
+                continue
+            if (nx, ny) not in known_empty:
+                continue
+            visited.add((nx, ny))
+            dist[(nx, ny)] = dist[(x, y)] + 1
+            # Propagate the first step direction
+            if (x, y) == start:
+                first_dir[(nx, ny)] = dir_label
+            else:
+                first_dir[(nx, ny)] = first_dir[(x, y)]
+            queue.append((nx, ny))
+
+    return first_dir, dist
+
+def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
+    # If all walls found, submit
+    if len(state["known_walls"]) >= state["num_walls"]:
+        submission = [f"{x}-{y}" for (x, y) in sorted(state["known_walls"])]
+        return {
+            "action_type": "submit",
+            "submission": submission,
+        }
+
+    n = state["length"]
+    total_cells = n * n
+    known_cells = len(state["known_empty"]) + len(state["known_walls"])
+    unknown_cells = max(0, total_cells - known_cells)
+
+    # Dynamic scan threshold based on remaining unknown area
+    if unknown_cells > 0.6 * total_cells:
+        scan_threshold = 10
+    elif unknown_cells > 0.3 * total_cells:
+        scan_threshold = 6
+    else:
+        scan_threshold = 3
+
+    # 1) Consider scanning now from any crow with high expected gain
+    best_scan = None  # (gain, crow_id)
+    for crow_id, (cx, cy) in state["crows"].items():
+        gain = _scan_unknown_count_at((cx, cy), n, state["known_empty"], state["known_walls"])
+        if gain >= scan_threshold:
+            if best_scan is None or gain > best_scan[0]:
+                best_scan = (gain, crow_id)
+
+    if best_scan is not None:
+        _, crow_id = best_scan
+        return {
+            "action_type": "scan",
+            "crow_id": crow_id,
+        }
+
+    # 2) Move towards a reachable scan center (a known-empty cell with unknowns in 5x5)
+    best_move = None  # (score_tuple, crow_id, direction)
+    for crow_id, (sx, sy) in state["crows"].items():
+        if (sx, sy) not in state["known_empty"]:
+            # Ensure current crow cell is marked empty
+            state["known_empty"].add((sx, sy))
+
+        first_dir, dist = _bfs_first_step_direction(state, (sx, sy))
+        # Evaluate all reachable known-empty cells as potential scan centers
+        for cell, d in dist.items():
+            gain = _scan_unknown_count_at(cell, n, state["known_empty"], state["known_walls"])
+            if gain <= 0:
+                continue
+            direction = first_dir.get(cell)
+            if not direction:
+                continue
+            # Prefer higher gain, then shorter distance
+            score = (gain, -d)
+            if best_move is None or score > best_move[0]:
+                best_move = (score, crow_id, direction)
+
+    if best_move is not None:
+        _, crow_id, direction = best_move
+        return {
+            "action_type": "move",
+            "crow_id": crow_id,
+            "direction": direction,
+        }
+
+    # 3) Exploratory probe: step into an adjacent unknown (may hit a wall)
+    best_probe = None  # (expected_gain, crow_id, direction)
+    for crow_id, (cx, cy) in state["crows"].items():
+        for nx, ny, direction in _neighbors4(cx, cy, n):
+            if (nx, ny) in state["known_walls"]:
+                continue
+            if (nx, ny) in state["known_empty"]:
+                continue
+            # Estimate gain if we could scan from that neighbor next turn
+            gain = _scan_unknown_count_at((nx, ny), n, state["known_empty"], state["known_walls"])
+            if best_probe is None or gain > best_probe[0]:
+                best_probe = (gain, crow_id, direction)
+
+    if best_probe is not None:
+        _, crow_id, direction = best_probe
+        return {
+            "action_type": "move",
+            "crow_id": crow_id,
+            "direction": direction,
+        }
+
+    # 4) Fallback: if absolutely nothing to do, scan with any crow (should be rare)
+    any_crow = next(iter(state["crows"].keys()))
+    return {
+        "action_type": "scan",
+        "crow_id": any_crow,
+    }
+
+@app.route("/fog-of-wall", methods=["POST"])
+def fog_of_wall():
+    data = request.get_json(silent=True) or {}
+
+    challenger_id = str(data.get("challenger_id", ""))
+    game_id = str(data.get("game_id", ""))
+    if not challenger_id or not game_id:
+        return bad_request("Missing challenger_id or game_id.")
+
+    key = (challenger_id, game_id)
+
+    # Initialize or update state
+    test_case = data.get("test_case")
+    if test_case:
+        # New test case: initialize state
+        length_of_grid = int(test_case.get("length_of_grid", 0))
+        num_of_walls = int(test_case.get("num_of_walls", 0))
+        crows_list = test_case.get("crows", [])
+
+        if length_of_grid <= 0 or not isinstance(crows_list, list):
+            return bad_request("Invalid test_case payload.")
+
+        state = {
+            "length": length_of_grid,
+            "num_walls": num_of_walls,
+            "known_walls": set(),         # Set[Tuple[int,int]]
+            "known_empty": set(),         # Set[Tuple[int,int]]
+            "crows": {},                  # Dict[str, Tuple[int,int]]
+        }
+        for c in crows_list:
+            cid = str(c.get("id"))
+            x = int(c.get("x", 0))
+            y = int(c.get("y", 0))
+            state["crows"][cid] = (x, y)
+            if _in_bounds(x, y, length_of_grid):
+                state["known_empty"].add((x, y))
+        _fog_state[key] = state
+    else:
+        # Must exist for subsequent steps
+        if key not in _fog_state:
+            return bad_request("State not initialized for this game_id; missing test_case.")
+        state = _fog_state[key]
+
+    # Apply previous action result to update state
+    previous_action = data.get("previous_action")
+    if previous_action:
+        _process_previous_action(state, previous_action)
+
+    # Decide next action
+    next_action = _choose_next_action(state)
+
+    # Fill required identifiers
+    response = {
+        "challenger_id": challenger_id,
+        "game_id": game_id,
+        "action_type": next_action["action_type"],
+    }
+    if next_action["action_type"] in ("move", "scan"):
+        response["crow_id"] = next_action["crow_id"]
+    if next_action["action_type"] == "move":
+        response["direction"] = next_action["direction"]
+    if next_action["action_type"] == "submit":
+        response["submission"] = next_action["submission"]
+
+    resp = make_response(jsonify(response), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
    
 if __name__ == "__main__":
     # For local development only

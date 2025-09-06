@@ -995,10 +995,13 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
     total_cells = n * n
     known_cells = len(state["known_empty"]) + len(state["known_walls"])
     unknown_cells = max(0, total_cells - known_cells)
+    steps = state.get("steps", 0)
+    elapsed = time.time() - state.get("start_time", time.time())
+    aggressive = (elapsed > 24.0) or (steps >= int(0.9 * n * n))
+    reservations: Dict[str, Tuple[int, int]] = state.setdefault("reservations", {})
+    scanned_centers: Set[Tuple[int, int]] = state.setdefault("scanned_centers", set())
 
     # Early scan seeding: perform initial scans to bootstrap knowledge
-    steps = state.get("steps", 0)
-    scanned_centers: Set[Tuple[int, int]] = state.setdefault("scanned_centers", set())
     if steps < max(2, len(state.get("crows", {}))):
         best = None
         for crow_id, (cx, cy) in state["crows"].items():
@@ -1010,11 +1013,13 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
         if best is not None and best[0] > 0:
             return {"action_type": "scan", "crow_id": best[1]}
 
-    # Dynamic scan threshold based on remaining unknown area
-    if unknown_cells > 0.6 * total_cells:
-        scan_threshold = 8
+    # Dynamic scan threshold based on remaining unknown area (lower in aggressive mode)
+    if aggressive:
+        scan_threshold = 1
+    elif unknown_cells > 0.6 * total_cells:
+        scan_threshold = 6
     elif unknown_cells > 0.3 * total_cells:
-        scan_threshold = 5
+        scan_threshold = 3
     else:
         scan_threshold = 2
 
@@ -1036,6 +1041,9 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
         band_max = int((band_index + 1) * n / num_crows) - 1
         if band_min <= cx <= band_max:
             gain += 1
+        # Encourage scanning if this is the crow's reserved center
+        if reservations.get(crow_id) == (cx, cy):
+            gain += 1
         if gain >= scan_threshold:
             if best_scan is None or gain > best_scan[0]:
                 best_scan = (gain, crow_id)
@@ -1049,6 +1057,7 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # 2) Move towards a reachable scan center (a known-empty cell with unknowns in 5x5)
     best_move = None  # (score_tuple, crow_id, direction)
+    reserved_cells = {t for cid, t in reservations.items() if isinstance(t, tuple)}
     for crow_id, (sx, sy) in state["crows"].items():
         if (sx, sy) not in state["known_empty"]:
             # Ensure current crow cell is marked empty
@@ -1074,10 +1083,15 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
             band_max = int((band_index + 1) * n / num_crows) - 1
             if band_min <= cell[0] <= band_max:
                 gain += 1
+            # Penalize cells reserved by other crows
+            if cell in reserved_cells and reservations.get(crow_id) != cell:
+                continue
             # Prefer higher gain, then shorter distance
             score = (gain, -d)
             if best_move is None or score > best_move[0]:
                 best_move = (score, crow_id, direction)
+                # Reserve this target center for the crow (to reduce overlap)
+                reservations[crow_id] = cell
 
     if best_move is not None:
         _, crow_id, direction = best_move
@@ -1117,7 +1131,42 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
             "direction": direction,
         }
 
-    # 4) Fallback: if absolutely nothing to do, scan with any crow (should be rare)
+    # 4) Lattice fallback: head towards an unscanned lattice center to cover edges/gaps
+    # Generate coarse grid of centers
+    lattice = []
+    stride = 4
+    for x in range(0, n, stride):
+        for y in range(0, n, stride):
+            lattice.append((x, y))
+    # Evaluate best lattice target per crow
+    best_lattice = None  # (score_tuple, crow_id, direction)
+    for crow_id, (sx, sy) in state["crows"].items():
+        first_dir, dist = _bfs_first_step_direction(state, (sx, sy))
+        for cell in lattice:
+            if cell in scanned_centers:
+                continue
+            if cell not in dist:
+                continue
+            d = dist[cell]
+            gain = _scan_unknown_count_at(cell, n, state["known_empty"], state["known_walls"])
+            if gain <= 0:
+                continue
+            direction = first_dir.get(cell)
+            if not direction:
+                continue
+            score = (gain, -d)
+            if best_lattice is None or score > best_lattice[0]:
+                best_lattice = (score, crow_id, direction)
+
+    if best_lattice is not None:
+        _, crow_id, direction = best_lattice
+        return {
+            "action_type": "move",
+            "crow_id": crow_id,
+            "direction": direction,
+        }
+
+    # 5) Fallback: if absolutely nothing to do, scan with any crow (should be rare)
     any_crow = next(iter(state["crows"].keys()))
     return {
         "action_type": "scan",
@@ -1182,28 +1231,7 @@ def fog_of_wall():
         except Exception:
             state["steps"] = 1
 
-    # Guard: avoid timeouts by submitting before budget exhaustion
-    elapsed = time.time() - state.get("start_time", time.time())
-    n = state["length"]
-    if (
-        elapsed > 25.0 or
-        state.get("steps", 0) >= int(0.95 * n * n)
-    ):
-        submission = [f"{x}-{y}" for (x, y) in sorted(state["known_walls"])]
-        response = {
-            "challenger_id": challenger_id,
-            "game_id": game_id,
-            "action_type": "submit",
-            "submission": submission,
-        }
-        # Cleanup state for next test case
-        try:
-            del _fog_state[key]
-        except Exception:
-            pass
-        resp = make_response(jsonify(response), 200)
-        resp.headers["Content-Type"] = "application/json"
-        return resp
+    # No early forced submit: explore aggressively via policy, submit only when complete
 
     # Decide next action
     next_action = _choose_next_action(state)

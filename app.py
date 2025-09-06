@@ -70,8 +70,6 @@ def ticketing_agent():
 
     # mapping { customer_name: concert_name }
     result_map: Dict[str, str] = {}
-    # per-customer per-concert scores
-    scores_map: Dict[str, Dict[str, float]] = {}
 
     for cust in customers:
         cname = cust.get("name") or ""
@@ -110,16 +108,11 @@ def ticketing_agent():
 
         best_name: Optional[str] = None
         best_score: float = float("-inf")
-        # collect per-concert scores for this customer
-        cust_scores: Dict[str, float] = {}
         for name in concert_by_name.keys():
             score = vip_points + latency_points.get(name, 0.0)
             if card_priority_concert == name:
                 score += 50.0
 
-            # store score (rounded for readability)
-            cust_scores[name] = round(score, 6)
-            
             if score > best_score:
                 best_score = score
                 best_name = name
@@ -131,18 +124,10 @@ def ticketing_agent():
                 elif d_curr == d_best and name < best_name:
                     best_name = name
 
-        # always include scores (even if no concert is chosen)
-        if cname:
-            scores_map[cname] = cust_scores
-            if best_name is not None:
-                result_map[cname] = best_name
-             
-    response_body = {
-        "assignments": result_map,
-        "scores": scores_map
-    }
-
-    resp = make_response(jsonify(response_body), 200)
+        if best_name is not None:
+            result_map[cname] = best_name
+            
+    resp = make_response(jsonify(result_map), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
 

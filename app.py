@@ -260,7 +260,7 @@ def blankety():
 @app.route("/trivia", methods=["GET"])
 def trivia():
     res = {
-        "answers": [ 1,
+        "answers": [ 4,
     1,
     2,
     2,

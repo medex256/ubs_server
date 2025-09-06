@@ -403,142 +403,117 @@ def root():
     return "OK", 200
 
 
+
 @app.route("/princess-diaries", methods=["POST"])
 def princess_diaries():
     data = request.get_json(silent=True)
     if not data:
         return bad_request("Invalid JSON body.")
     
-    # Extract data
     tasks = data.get("tasks", [])
     subway = data.get("subway", [])
     starting_station = data.get("starting_station")
     
     if not isinstance(tasks, list) or not isinstance(subway, list) or starting_station is None:
         return bad_request("Invalid input format.")
-    
-    # Early exit for empty case
     if not tasks:
         return jsonify({"max_score": 0, "min_fee": 0, "schedule": []}), 200
     
-    # Preprocess tasks: sort by start time
-    tasks_sorted = sorted(tasks, key=lambda t: t["start"])
+    # Efficient preprocessing
+    tasks.sort(key=lambda t: t["start"])
     
-    # Build subway graph - find all unique stations
-    stations = set()
-    for route in subway:
-        conn = route.get("connection", [])
-        if len(conn) == 2:
-            stations.add(conn[0])
-            stations.add(conn[1])
-    stations.add(starting_station)
+    # Build compact distance matrix
+    stations = {starting_station}
+    for t in tasks:
+        stations.add(t["station"])
+    for r in subway:
+        if len(r.get("connection", [])) == 2:
+            stations.update(r["connection"])
     
-    # Map station IDs to consecutive indices for efficient matrix operations
-    station_map = {s: i for i, s in enumerate(sorted(stations))}
-    num_stations = len(stations)
+    idx_of = {s: i for i, s in enumerate(stations)}
+    n_st = len(stations)
     
-    # Initialize distance matrix with infinity
-    inf = float('inf')
-    distances = [[inf for _ in range(num_stations)] for _ in range(num_stations)]
+    dist = [[float('inf')] * n_st for _ in range(n_st)]
+    for i in range(n_st):
+        dist[i][i] = 0
     
-    # Set diagonal to 0 (distance to self)
-    for i in range(num_stations):
-        distances[i][i] = 0
+    for r in subway:
+        u, v = r.get("connection", [None, None])
+        fee = r.get("fee", 0)
+        if u in idx_of and v in idx_of:
+            iu, iv = idx_of[u], idx_of[v]
+            dist[iu][iv] = dist[iv][iu] = min(dist[iu][iv], fee)
     
-    # Fill in direct connections
-    for route in subway:
-        conn = route.get("connection", [])
-        fee = route.get("fee", 0)
-        if len(conn) == 2:
-            i = station_map[conn[0]]
-            j = station_map[conn[1]]
-            distances[i][j] = fee
-            distances[j][i] = fee  # Undirected graph
+    # Floyd-Warshall
+    for k in range(n_st):
+        for i in range(n_st):
+            for j in range(n_st):
+                dist[i][j] = min(dist[i][j], dist[i][k] + dist[k][j])
     
-    # Floyd-Warshall algorithm for all-pairs shortest paths
-    for k in range(num_stations):
-        for i in range(num_stations):
-            for j in range(num_stations):
-                if distances[i][k] != inf and distances[k][j] != inf:
-                    distances[i][j] = min(distances[i][j], distances[i][k] + distances[k][j])
+    starting_idx = idx_of[starting_station]
     
-    # Convert starting station to index
-    starting_idx = station_map[starting_station]
+    # Optimized memoization with sys.setrecursionlimit if needed
+    import sys
+    sys.setrecursionlimit(10000)
     
-    # Dynamic Programming to find optimal schedule
     memo = {}
     
     def dp(index, last_task_idx):
-        # Base case: no more tasks to consider
-        if index == len(tasks_sorted):
-            # Calculate fee to return to starting station
+        if index == len(tasks):
             return_fee = 0
             if last_task_idx != -1:
-                last_station = tasks_sorted[last_task_idx]["station"]
-                last_idx = station_map[last_station]
-                return_fee = distances[last_idx][starting_idx]
+                last_idx = idx_of[tasks[last_task_idx]["station"]]
+                return_fee = dist[last_idx][starting_idx]
             return (0, return_fee, [])
         
-        # Check memoization table
         key = (index, last_task_idx)
         if key in memo:
             return memo[key]
         
-        # Option 1: Skip current task
-        skip_score, skip_fee, skip_schedule = dp(index + 1, last_task_idx)
+        # Skip option
+        skip_result = dp(index + 1, last_task_idx)
         
-        # Option 2: Take current task if possible
-        curr_task = tasks_sorted[index]
+        # Take option (if valid)
+        take_result = (0, float('inf'), [])
+        curr_task = tasks[index]
+        
         can_take = True
-        
-        # Check for time overlap with previous task
         if last_task_idx != -1:
-            last_task = tasks_sorted[last_task_idx]
-            if last_task["end"] > curr_task["start"]:
+            if tasks[last_task_idx]["end"] > curr_task["start"]:
                 can_take = False
         
-        take_score, take_fee, take_schedule = (0, float('inf'), [])
-        
         if can_take:
-            # Calculate travel fee to current task
-            travel_fee = 0
-            curr_idx = station_map[curr_task["station"]]
+            curr_idx = idx_of[curr_task["station"]]
             
-            if last_task_idx == -1:  # Coming from starting station
-                travel_fee = distances[starting_idx][curr_idx]
-            else:  # Coming from previous task
-                prev_station = tasks_sorted[last_task_idx]["station"]
-                prev_idx = station_map[prev_station]
-                travel_fee = distances[prev_idx][curr_idx]
+            if last_task_idx == -1:
+                travel_fee = dist[starting_idx][curr_idx]
+            else:
+                prev_idx = idx_of[tasks[last_task_idx]["station"]]
+                travel_fee = dist[prev_idx][curr_idx]
             
-            # Recursive call to find best schedule after taking this task
             next_score, next_fee, next_schedule = dp(index + 1, index)
             
             take_score = curr_task["score"] + next_score
             take_fee = travel_fee + next_fee
             take_schedule = [curr_task["name"]] + next_schedule
+            take_result = (take_score, take_fee, take_schedule)
         
-        # Choose the better option (score first, fee second)
-        if take_score > skip_score or (take_score == skip_score and take_fee < skip_fee):
-            result = (take_score, take_fee, take_schedule)
+        # Choose better option
+        if take_result[0] > skip_result[0] or (take_result[0] == skip_result[0] and take_result[1] < skip_result[1]):
+            result = take_result
         else:
-            result = (skip_score, skip_fee, skip_schedule)
+            result = skip_result
         
-        # Memoize and return
         memo[key] = result
         return result
     
-    # Run the DP algorithm
     max_score, min_fee, schedule = dp(0, -1)
     
-    # Prepare response
-    response = {
+    return jsonify({
         "max_score": max_score,
         "min_fee": min_fee,
         "schedule": schedule
-    }
-    
-    return jsonify(response), 200
+    }), 200
 
 
    

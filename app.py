@@ -199,11 +199,11 @@ def trivia():
             2,  # "Blankety Blanks": How many lists and elements per list are included in the dataset you must impute?
             2,  # "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?
             3,  # "MST Calculation": What is the average number of nodes in a test case?
-            4,  # "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
+            4,  # zhb "Universal Bureau of Surveillance": Which singer did not have a James Bond theme song?
             3,  # "Operation Safeguard": What is the smallest font size in our question?
             4,  # "Capture The Flag": Which of these are anagrams of the challenge name?
-            3,  # "Filler 1": Where has UBS Global Coding Challenge been held before?
-            3
+            4,  # zhb "Filler 1": Where has UBS Global Coding Challenge been held before?
+            3 #zhb
         ]
     }
     return jsonify(res), 200
@@ -895,6 +895,7 @@ def _integrate_scan(state: Dict[str, Any], crow_id: str, scan_result: List[List[
     cx, cy = state["crows"][crow_id]
 
     # The scan_result is 5x5 centered at crow, rows top-to-bottom, cols left-to-right
+    newly_empty: Set[Tuple[int, int]] = set()
     for r in range(5):
         for c in range(5):
             symbol = scan_result[r][c]
@@ -907,13 +908,23 @@ def _integrate_scan(state: Dict[str, Any], crow_id: str, scan_result: List[List[
             # Treat '_' as empty as well (scanner shows '_' in examples for empty)
             if symbol == "C" or symbol == "*" or symbol == "_":
                 state["known_empty"].add((x, y))
+                newly_empty.add((x, y))
             elif symbol == "W":
                 state["known_walls"].add((x, y))
     # Always ensure the crow's current cell is empty
     state["known_empty"].add((cx, cy))
+    newly_empty.add((cx, cy))
     # Mark this center as scanned and update frontier around the scanned window center
     state.setdefault("scanned_centers", set()).add((cx, cy))
-    _update_frontier(state, around=[(cx, cy)])
+    # Update frontier around all newly discovered empties
+    _update_frontier(state, around=list(newly_empty))
+    # Clear reservation if this center was reserved for this crow
+    reservations: Dict[str, Tuple[int, int]] = state.setdefault("reservations", {})
+    if reservations.get(crow_id) == (cx, cy):
+        try:
+            del reservations[crow_id]
+        except Exception:
+            pass
 
 def _process_previous_action(state: Dict[str, Any], previous_action: Dict[str, Any]):
     if not previous_action:
@@ -1000,6 +1011,21 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
     elapsed = time.time() - state.get("start_time", time.time())
     aggressive = (elapsed > 24.0) or (steps >= int(0.9 * n * n))
     reservations: Dict[str, Tuple[int, int]] = state.setdefault("reservations", {})
+    reservation_set_step: Dict[str, int] = state.setdefault("reservation_set_step", {})
+    # Expire stale reservations or those already scanned
+    to_del = []
+    for cid, cell in reservations.items():
+        if cell in scanned_centers or (steps - reservation_set_step.get(cid, steps)) > 12:
+            to_del.append(cid)
+    for cid in to_del:
+        try:
+            del reservations[cid]
+        except Exception:
+            pass
+        try:
+            del reservation_set_step[cid]
+        except Exception:
+            pass
     scanned_centers: Set[Tuple[int, int]] = state.setdefault("scanned_centers", set())
 
     # Early scan seeding: perform initial scans to bootstrap knowledge
@@ -1045,6 +1071,12 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
         # Encourage scanning if this is the crow's reserved center
         if reservations.get(crow_id) == (cx, cy):
             gain += 1
+        # If at reserved center and it still has any unknown gain, scan now
+        if reservations.get(crow_id) == (cx, cy) and gain >= 1:
+            return {
+                "action_type": "scan",
+                "crow_id": crow_id,
+            }
         if gain >= scan_threshold:
             if best_scan is None or gain > best_scan[0]:
                 best_scan = (gain, crow_id)
@@ -1093,6 +1125,7 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
                 best_move = (score, crow_id, direction)
                 # Reserve this target center for the crow (to reduce overlap)
                 reservations[crow_id] = cell
+                reservation_set_step[crow_id] = steps
 
     if best_move is not None:
         _, crow_id, direction = best_move

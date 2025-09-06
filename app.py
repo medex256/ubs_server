@@ -254,7 +254,7 @@ def blankety():
                     # All values missing, use zeros
                     imputed_series.append([0.0] * 1000)
         
-        resp = make_response(jsonify(imputed_series), 200)
+        resp = make_response(jsonify({"answer": imputed_series}), 200)
         resp.headers["Content-Type"] = "application/json"
         return resp
         

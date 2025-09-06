@@ -962,6 +962,15 @@ def _process_previous_action(state: Dict[str, Any], previous_action: Dict[str, A
         scan_result = previous_action.get("scan_result")
         if isinstance(scan_result, list) and len(scan_result) == 5:
             _integrate_scan(state, crow_id, scan_result)
+    
+    # Update stagnation tracking
+    known_cells_now = len(state.get("known_empty", set())) + len(state.get("known_walls", set()))
+    last_known_cells = state.get("last_known_cells", 0)
+    if known_cells_now > last_known_cells:
+        state["stagnation_steps"] = 0
+    else:
+        state["stagnation_steps"] = int(state.get("stagnation_steps", 0)) + 1
+    state["last_known_cells"] = known_cells_now
 
 def _bfs_first_step_direction(state: Dict[str, Any], start: Tuple[int, int]) -> Tuple[Dict[Tuple[int, int], str], Dict[Tuple[int, int], int]]:
     # BFS only through known empty cells
@@ -1010,6 +1019,7 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
     steps = state.get("steps", 0)
     elapsed = time.time() - state.get("start_time", time.time())
     aggressive = (elapsed > 24.0) or (steps >= int(0.9 * n * n))
+    stagnation = int(state.get("stagnation_steps", 0)) >= 6
     reservations: Dict[str, Tuple[int, int]] = state.setdefault("reservations", {})
     reservation_set_step: Dict[str, int] = state.setdefault("reservation_set_step", {})
     # Expire stale reservations or those already scanned
@@ -1041,7 +1051,7 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
             return {"action_type": "scan", "crow_id": best[1]}
 
     # Dynamic scan threshold based on remaining unknown area (lower in aggressive mode)
-    if aggressive:
+    if aggressive or stagnation:
         scan_threshold = 1
     elif unknown_cells > 0.6 * total_cells:
         scan_threshold = 6
@@ -1097,9 +1107,18 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
             state["known_empty"].add((sx, sy))
 
         first_dir, dist = _bfs_first_step_direction(state, (sx, sy))
-        # Evaluate all reachable known-empty cells as potential scan centers
+        # Evaluate reachable known-empty cells that are adjacent to unknowns (frontier-adjacent)
         for cell, d in dist.items():
             if cell in scanned_centers:
+                continue
+            # Require frontier adjacency: at least one neighbor unknown
+            cx, cy = cell
+            frontier_adjacent = False
+            for nx, ny, _dl in _neighbors4(cx, cy, n):
+                if (nx, ny) not in state["known_empty"] and (nx, ny) not in state["known_walls"]:
+                    frontier_adjacent = True
+                    break
+            if not frontier_adjacent and not aggressive:
                 continue
             gain = _scan_unknown_count_at(cell, n, state["known_empty"], state["known_walls"])
             if gain <= 0:
@@ -1168,7 +1187,7 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
     # 4) Lattice fallback: head towards an unscanned lattice center to cover edges/gaps
     # Generate coarse grid of centers
     lattice = []
-    stride = 4
+    stride = 3 if aggressive else 4
     for x in range(0, n, stride):
         for y in range(0, n, stride):
             lattice.append((x, y))

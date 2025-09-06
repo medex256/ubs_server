@@ -526,100 +526,90 @@ def ticketing_agent():
     resp.headers["Content-Type"] = "application/json"
     return resp
 
-def _edge_key(spy_one: str, spy_two: str) -> Tuple[str, str]:
-    if spy_one <= spy_two:
-        return spy_one, spy_two
-    return spy_two, spy_one
+def _normalized_edge(u: str, v: str) -> Tuple[str, str]:
+    return (u, v) if u <= v else (v, u)
 
-
-def _find_bridges(nodes: Set[str], adjacency: Dict[str, Set[str]]) -> Set[frozenset]:
+def _find_bridges(adjacency: Dict[str, List[str]]) -> Set[Tuple[str, str]]:
+    # Tarjan's algorithm for bridges in an undirected graph
     discovery_time: Dict[str, int] = {}
-    low_time: Dict[str, int] = {}
-    parent: Dict[str, str | None] = {}
+    low_link: Dict[str, int] = {}
+    parent: Dict[str, Optional[str]] = {}
     visited: Set[str] = set()
-    bridges: Set[frozenset] = set()
-    time_counter: int = 0
+    time_counter = [0]
+    bridges: Set[Tuple[str, str]] = set()
 
-    def depth_first_search(source: str) -> None:
-        nonlocal time_counter
-        visited.add(source)
-        time_counter += 1
-        discovery_time[source] = time_counter
-        low_time[source] = time_counter
+    def dfs(current_node: str) -> None:
+        visited.add(current_node)
+        discovery_time[current_node] = time_counter[0]
+        low_link[current_node] = time_counter[0]
+        time_counter[0] += 1
 
-        for neighbor in adjacency.get(source, set()):
+        for neighbor in adjacency[current_node]:
             if neighbor not in visited:
-                parent[neighbor] = source
-                depth_first_search(neighbor)
-                low_time[source] = min(low_time[source], low_time[neighbor])
+                parent[neighbor] = current_node
+                dfs(neighbor)
+                low_link[current_node] = min(low_link[current_node], low_link[neighbor])
+                if low_link[neighbor] > discovery_time[current_node]:
+                    bridges.add(_normalized_edge(current_node, neighbor))
+            elif parent.get(current_node) != neighbor:
+                low_link[current_node] = min(low_link[current_node], discovery_time[neighbor])
 
-                if low_time[neighbor] > discovery_time[source]:
-                    bridges.add(frozenset({source, neighbor}))
-            elif parent.get(source) != neighbor:
-                low_time[source] = min(low_time[source], discovery_time[neighbor])
-
-    for node in nodes:
+    for node in adjacency.keys():
         if node not in visited:
             parent[node] = None
-            depth_first_search(node)
+            dfs(node)
 
     return bridges
 
-
-def _extra_channels(edges: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    multiplicity: Counter[Tuple[str, str]] = Counter(
-        _edge_key(edge["spy1"], edge["spy2"]) for edge in edges
-    )
-
-    adjacency: Dict[str, Set[str]] = defaultdict(set)
-    nodes: Set[str] = set()
+def _compute_extra_channels(edges: List[Dict]) -> List[Dict]:
+    # Build adjacency list
+    adjacency: Dict[str, List[str]] = defaultdict(list)
     for edge in edges:
-        spy_one = edge["spy1"]
-        spy_two = edge["spy2"]
-        nodes.add(spy_one)
-        nodes.add(spy_two)
-        key = _edge_key(spy_one, spy_two)
-        adjacency[key[0]].add(key[1])
-        adjacency[key[1]].add(key[0])
+        u = str(edge.get("spy1"))
+        v = str(edge.get("spy2"))
+        adjacency[u].append(v)
+        adjacency[v].append(u)
 
-    bridges: Set[frozenset] = _find_bridges(nodes, adjacency)
+    if not adjacency:
+        return []
 
-    non_bridge_keys: Set[frozenset] = set()
-    for key, count in multiplicity.items():
-        undirected = frozenset(key)
-        if count > 1:
-            non_bridge_keys.add(undirected)
+    bridges = _find_bridges(adjacency)
 
-    for node, neighbors in adjacency.items():
-        for neighbor in neighbors:
-            undirected = frozenset({node, neighbor})
-            if undirected not in bridges:
-                non_bridge_keys.add(undirected)
-
-    extra: List[Dict[str, str]] = []
+    # Preserve input order; include only non-bridge edges
+    extra = []
     for edge in edges:
-        undirected = frozenset(_edge_key(edge["spy1"], edge["spy2"]))
-        if undirected in non_bridge_keys:
-            extra.append({"spy1": edge["spy1"], "spy2": edge["spy2"]})
-
+        u = str(edge.get("spy1"))
+        v = str(edge.get("spy2"))
+        if _normalized_edge(u, v) not in bridges:
+            extra.append({"spy1": u, "spy2": v})
     return extra
 
 @app.post("/investigate")
 def investigate():
-    payload = request.get_json(silent=True) or {}
-    networks_input: List[Dict] = payload.get("networks", [])
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    result_networks: List[Dict] = []
-    for network_entry in networks_input:
-        network_id = network_entry.get("networkId")
-        edges: List[Dict[str, str]] = network_entry.get("network", [])
-        extra = _extra_channels(edges)
+    if not isinstance(payload, list):
+        return jsonify({"error": "Expected a JSON array of networks"}), 400
+
+    result_networks = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        network_id = item.get("networkId")
+        edges = item.get("network", [])
+        if not isinstance(edges, list):
+            edges = []
+
+        extra_channels = _compute_extra_channels(edges)
         result_networks.append({
             "networkId": network_id,
-            "extraChannels": extra,
+            "extraChannels": extra_channels,
         })
 
     return jsonify({"networks": result_networks})
+
 
 
 @app.route("/")

@@ -5,6 +5,7 @@ from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
 from collections import defaultdict, deque
+import re, math
 
 app = Flask(__name__)
 
@@ -544,6 +545,225 @@ def princess_diaries():
         i = dp_next[i]
 
     return jsonify({"max_score": max_score, "min_fee": min_fee, "schedule": schedule}), 200
+
+@app.route("/trading-formula", methods=["POST"]) 
+def trading_formula():
+    data = request.get_json(silent=True)
+    if data is None:
+        return bad_request("Invalid JSON body.")
+
+    if not isinstance(data, list):
+        return bad_request("Expected a list of test cases.")
+
+    results = []
+
+    def replace_text_commands(s: str) -> str:
+        # Replace \text{VAR} with VAR
+        return re.sub(r'\\text\{([^}]+)\}', lambda m: m.group(1).strip(), s)
+
+    def replace_times_dot(s: str) -> str:
+        return s.replace('\\times', '*').replace('\\cdot', '*')
+
+    def remove_latex_wrappers(s: str) -> str:
+        s = s.replace('\\left', '').replace('\\right', '')
+        s = s.replace('\\,', '').replace('\\;', '').replace('\\ ', '')
+        return s
+
+    def replace_frac(s: str) -> str:
+        # recursively replace simple \frac{a}{b}
+        pattern = re.compile(r'\\frac\s*{([^{}]+)}\s*{([^{}]+)}')
+        while True:
+            m = pattern.search(s)
+            if not m:
+                break
+            a = m.group(1)
+            b = m.group(2)
+            s = s[:m.start()] + f'(({a})/({b}))' + s[m.end():]
+        return s
+
+    def replace_superscripts(s: str) -> str:
+        # replace {...}^{...} or ^{...}
+        s = re.sub(r'\^\{([^}]+)\}', r'**(\1)', s)
+        # single char superscripts like x^2
+        s = re.sub(r'([A-Za-z0-9_\)\]])\^([A-Za-z0-9_\(])', r'\1**\2', s)
+        return s
+
+    def replace_exp_e(s: str) -> str:
+        # e^{x} or \mathrm{e}^{x} -> exp(x)
+        s = re.sub(r'e\^\{([^}]+)\}', r'exp(\1)', s)
+        s = re.sub(r'\\mathrm\{e\}\^\{([^}]+)\}', r'exp(\1)', s)
+        return s
+
+    def replace_summation(s: str) -> str:
+        # handle \sum_{i=START}^{END}{BODY} or without braces for BODY
+        pattern = re.compile(r'\\sum_{(\w+)=(.+?)}\^\{(.+?)\}\s*\{([^}]+)\}')
+        def _repl(m):
+            idx = m.group(1)
+            start = m.group(2)
+            end = m.group(3)
+            body = m.group(4)
+            return f"(sum(({body}) for {idx} in range(int(({start})), int(({end}))+1)))"
+        s = pattern.sub(_repl, s)
+        pattern2 = re.compile(r'\\sum_{(\w+)=(.+?)}\^\{(.+?)\}\s*([^\\\s]+)')
+        s = pattern2.sub(_repl, s)
+        return s
+
+    def replace_latex_commands(s: str) -> str:
+        # Map common Greek letters and remove backslashes on commands
+        greek = ['alpha','beta','gamma','delta','epsilon','zeta','eta','theta','iota','kappa','lambda',
+                 'mu','nu','xi','omicron','pi','rho','sigma','tau','upsilon','phi','chi','psi','omega']
+        for g in greek:
+            s = s.replace('\\' + g, g)
+
+        # Common function names
+        s = s.replace('\\max', 'max').replace('\\min', 'min').replace('\\log', 'log').replace('\\exp', 'exp')
+
+        # Remove other backslashes from simple commands (e.g. \beta -> beta)
+        s = re.sub(r'\\([A-Za-z]+)', r'\1', s)
+        return s
+
+    def replace_subscripts_and_brackets(s: str) -> str:
+        # Convert _{...} -> _... and _x -> _x (keep underscore for python identifiers)
+        s = re.sub(r'_|\u2019', '_', s)  
+        s = re.sub(r'_\{([^}]+)\}', lambda m: '_' + re.sub(r'\s+', '_', m.group(1)), s)
+        s = re.sub(r'_([A-Za-z0-9])', r'_\1', s)
+
+        # Convert bracketed notation A[B] -> A_B (iteratively)
+        prev = None
+        while prev != s:
+            prev = s
+            s = re.sub(r'([A-Za-z0-9_])\[([^\]]+)\]', r'\1_\2', s)
+        return s
+
+    def latex_to_python(expr: str) -> str:
+        # Robust conversion of a LaTeX-like expression to a safe Python expression.
+        s = expr or ''
+        s = replace_text_commands(s)
+        s = replace_times_dot(s)
+        s = remove_latex_wrappers(s)
+        s = replace_frac(s)
+        s = replace_exp_e(s)
+        s = replace_summation(s)
+        s = replace_latex_commands(s)
+        s = replace_subscripts_and_brackets(s)
+        s = replace_superscripts(s)
+
+        # Remove $ markers and normalize braces
+        s = s.replace('$', '')
+        s = s.replace('{', '(').replace('}', ')')
+
+        # Normalize unicode minus signs to ASCII
+        s = s.replace('\u2212', '-')
+        s = s.replace('−', '-')
+
+        # Remove thousands separators: 1,000 -> 1000
+        s = re.sub(r'(?<=\d),(?=\d)', '', s)
+
+        # Convert percentages: 3% -> (3/100)
+        s = re.sub(r'(?P<num>\d+(?:\.\d+)?)\s*(?:\\%|%)', lambda m: f'(({m.group("num")})/100)', s)
+
+        # Absolute value bars: |x| -> abs(x)
+        prev = None
+        while prev != s:
+            prev = s
+            s = re.sub(r'\|([^|]+)\|', r'abs(\1)', s)
+
+        # Collapse whitespace
+        s = re.sub(r'\s+', ' ', s).strip()
+
+        # Implied multiplication insertion but avoid breaking function calls like max( or sin(
+        known_funcs = {
+            'max','min','sum','exp','log','log10','pow','abs','round',
+            'sin','cos','tan','sqrt','floor','ceil'
+        }
+
+        def _func_replace(m):
+            name = m.group(1)
+            # If this looks like a known function call (no space originally), do not insert '*'
+            if name in known_funcs:
+                return name + '('
+            return name + '*('
+
+        # Insert '*' when identifier is followed by SPACE then '(': 'x (' -> 'x*('
+        s = re.sub(r'([A-Za-z_][A-Za-z0-9_]*)\s+\(', _func_replace, s)
+        # Insert '*' when number or ')' directly before '(': '2(' or ')(' -> '2*(' or ')*('
+        s = re.sub(r'(?<=[0-9\)])\s*(?=\()', '*', s)
+        # Insert '*' between number and identifier: '2x' -> '2*x'
+        s = re.sub(r'(?<=[0-9\.])\s*(?=[A-Za-z_])', '*', s)
+        # Insert '*' between ')' and identifier/number: ')x' -> ')*x'
+        s = re.sub(r'(?<=\))\s*(?=[A-Za-z_0-9])', '*', s)
+
+        return s
+
+    # Expanded safe functions and constants
+    safe_funcs = {
+        'exp': math.exp,
+        'log': math.log,
+        'log10': math.log10,
+        'max': max,
+        'min': min,
+        'sum': sum,
+        'pow': pow,
+        'abs': abs,
+        'round': round,
+        'sqrt': math.sqrt,
+        'sin': math.sin,
+        'cos': math.cos,
+        'tan': math.tan,
+        'floor': math.floor,
+        'ceil': math.ceil,
+        'pi': math.pi,
+        'e': math.e,
+    }
+
+    for case in data:
+        try:
+            formula = case.get('formula') if isinstance(case, dict) else None
+            variables = case.get('variables') if isinstance(case, dict) else {}
+            if formula is None or not isinstance(variables, dict):
+                results.append({'result': None})
+                continue
+
+            # take RHS if formula contains =
+            if '=' in formula:
+                rhs = formula.split('=', 1)[1]
+            else:
+                rhs = formula
+
+            py = latex_to_python(rhs)
+
+            # Prepare local environment with provided variables
+            local_env = {}
+            for k, v in variables.items():
+                key = str(k)
+                # normalize numeric-like strings
+                try:
+                    val = float(v)
+                except Exception:
+                    val = v
+                # base key
+                if key not in local_env:
+                    local_env[key] = val
+                # sanitized variants
+                vk = key.replace('[', '_').replace(']', '').replace(' ', '_')
+                vk2 = re.sub(r'[^0-9A-Za-z_]', '_', key)
+                vk3 = vk2.lower()
+                for sk in (vk, vk2, vk3):
+                    if sk and sk not in local_env:
+                        local_env[sk] = val
+
+            # Merge safe funcs without overwriting variables
+            for fname, fobj in safe_funcs.items():
+                if fname not in local_env:
+                    local_env[fname] = fobj
+
+            # Evaluate expression in restricted environment
+            value = eval(py, {'__builtins__': None}, local_env)
+            results.append({'result': round(float(value), 4)})
+        except Exception:
+            results.append({'result': None})
+
+    return jsonify(results), 200
 
 
 

@@ -2631,7 +2631,15 @@ class TradingBot:
         score = bull - bear
         if any(w in t for w in self._IMPACT):
             score *= 2
-        source_w = 1.5 if source.lower() in ['reuters','bloomberg','wsj','financial times'] else 1.0
+        s = source.lower()
+        if s in ['reuters','bloomberg','wsj','financial times','ft','cnbc']:
+            source_w = 1.5
+        elif s in ['coindesk','cointelegraph','decrypt']:
+            source_w = 1.2
+        elif s in ['twitter','x.com','reddit']:
+            source_w = 0.7
+        else:
+            source_w = 1.0
         score *= source_w
         return max(-1.0, min(1.0, score / 5.0))
 
@@ -2680,6 +2688,8 @@ class TradingBot:
         o1_low   = self._p(obs[0],'low')
         o2_close = self._p(obs[1],'close', o1_close) if len(obs)>1 else o1_close
         o3_close = self._p(obs[2],'close', o2_close) if len(obs)>2 else o2_close
+        o2_open  = self._p(obs[1],'open', o1_close) if len(obs)>1 else o1_close
+        o3_open  = self._p(obs[2],'open', o2_close) if len(obs)>2 else o2_close
 
         gap    = self._pct(o1_open, prev_close)
         init   = self._pct(o1_close, o1_open)
@@ -2693,6 +2703,7 @@ class TradingBot:
         vol_ratio = vol1/volavg if volavg else 1.0
 
         sent = self._sentiment(ev.get('title',''), ev.get('source',''))
+        src = (ev.get('source','') or '').lower()
 
         # proximity flags and candle anatomy
         near_res = abs(self._pct(o1_close, prev_high)) < 0.005
@@ -2703,6 +2714,14 @@ class TradingBot:
         upper_wick = (o1_high - max(o1_open, o1_close)) / rng
         lower_wick = (min(o1_open, o1_close) - o1_low) / rng
         is_green = o1_close > o1_open
+
+        # pre-news range compression
+        prev_ranges = []
+        for c in prev[-3:]:
+            ch = self._p(c,'high'); cl = self._p(c,'low'); cc = self._p(c,'close',1.0)
+            prev_ranges.append((ch-cl)/cc if cc else 0.0)
+        prev_range_avg = float(np.mean(prev_ranges)) if prev_ranges else 0.0
+        range_expansion = (rng / max(1e-12, prev_range_avg*o1_close)) if prev_range_avg>0 else 0.0
 
         # Build signal ensemble (direction in {-1, +1}, strength [0..1], weight)
         signals: List[Tuple[int, float, float]] = []
@@ -2739,14 +2758,51 @@ class TradingBot:
         if lower_wick > 0.6:
             signals.append((+1, min(1.0, (lower_wick-0.6)/0.4), 0.4))
 
+        # 6b) Observation sequence patterns (2-of-3 rule)
+        seq = []
+        for c in obs[:3]:
+            o = self._p(c,'open',0.0); cl = self._p(c,'close',0.0)
+            seq.append(1 if cl>o else -1 if cl<o else 0)
+        if len(seq)>=2:
+            if sum(1 for sgn in seq if sgn==1) >= 2:
+                signals.append((+1, 0.5, 0.6))
+            if sum(1 for sgn in seq if sgn==-1) >= 2:
+                signals.append((-1, 0.5, 0.6))
+
         # 6) Volume confirmation aligned with drift or body
         if vol_ratio > 1.5:
             vol_dir = drift_dir if drift_dir!=0 else (+1 if is_green else -1)
-            signals.append((vol_dir, min(1.0, (vol_ratio-1.5)/1.5), 0.6))
+            signals.append((vol_dir, min(1.0, (vol_ratio-1.5)/1.5), 0.7 if range_expansion>1 else 0.5))
 
         # 7) Sentiment tilt
         if abs(sent) > 0.05:
-            signals.append(((+1 if sent>0 else -1), min(1.0, abs(sent)), 0.35))
+            w_sent = 0.35
+            if src in ['twitter','x.com','reddit']:
+                w_sent = 0.2
+            elif src in ['reuters','bloomberg','wsj','financial times','ft','cnbc']:
+                w_sent = 0.45
+            signals.append(((+1 if sent>0 else -1), min(1.0, abs(sent)), w_sent))
+
+        # Freshness boost (if provided)
+        try:
+            news_t = float(ev.get('time') or 0)
+            obs_t = float(obs[0].get('timestamp') or 0)
+            if news_t>0 and obs_t>0:
+                delay_min = max(0.0, (obs_t - news_t) / 60000.0)
+                if delay_min <= 2.0:
+                    # early reaction: boost drift/volume signals
+                    signals.append((drift_dir if drift_dir!=0 else (+1 if is_green else -1), 0.3, 0.3))
+                elif delay_min > 8.0:
+                    # stale: downweight with small contrarian nudge
+                    signals.append((-drift_dir if drift_dir!=0 else (-1 if is_green else +1), 0.2, 0.2))
+        except Exception:
+            pass
+
+        # Hard doji+low volume filter
+        if body_ratio < 0.12 and vol_ratio <= 1.2:
+            decision = 'LONG' if is_green else 'SHORT'
+            conf = 0.05
+            return {'event_id': ev.get('id'), 'decision': decision, 'confidence': conf}
 
         # Aggregate
         if not signals:
@@ -2787,18 +2843,23 @@ class TradingBot:
         if not scored:
             return []
         # gate low-confidence trades, relax if not enough
-        min_conf = 0.12
+        min_conf = 0.15
         pool = [t for t in scored if t.get('confidence',0) >= min_conf]
         if len(pool) < k:
-            min_conf = 0.08
+            min_conf = 0.12
             pool = [t for t in scored if t.get('confidence',0) >= min_conf]
         if not pool:
             pool = scored[:]
         pool.sort(key=lambda x: x.get('confidence',0.0), reverse=True)
 
-        # target 40–60% balance
-        target_min = int(k*0.4)
-        target_max = int(k*0.6)
+        # dynamic balance: widen caps if pool is skewed strongly
+        pool_longs = sum(1 for t in pool if t['decision']=='LONG')
+        pool_ratio = pool_longs / max(1, len(pool))
+        if pool_ratio > 0.65 or pool_ratio < 0.35:
+            target_max = int(k*0.7)
+        else:
+            target_max = int(k*0.6)
+        target_min = k - target_max
 
         longs = [t for t in pool if t['decision']=='LONG']
         shorts= [t for t in pool if t['decision']=='SHORT']
@@ -2827,7 +2888,6 @@ class TradingBot:
         # enforce minimum minority
         cnt_long = len([x for x in sel if x['decision']=='LONG'])
         cnt_short= len(sel) - cnt_long
-        minority_needed = int(k*0.4)
         if cnt_long < minority_needed and cnt_short > (k - minority_needed):
             need = minority_needed - cnt_long
             add = [t for t in longs if t not in sel][:need]

@@ -22,6 +22,7 @@ def bad_request(message: str, details: Optional[Dict[str, Any]] = None, status_c
 
 
 @app.route("/sailing-club", methods=["POST"])
+@app.route("/sailing-club/submission", methods=["POST"])
 def sailing_club_submission():
     data = request.get_json(silent=True) or {}
     test_cases = data.get("testCases", [])
@@ -93,6 +94,24 @@ def sailing_club_submission():
         })
 
     resp = make_response(jsonify({"solutions": solutions}), 200)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+@app.errorhandler(404)
+def handle_404(e):
+    resp = make_response(jsonify({"error": "Not Found"}), 404)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+@app.errorhandler(405)
+def handle_405(e):
+    resp = make_response(jsonify({"error": "Method Not Allowed"}), 405)
+    resp.headers["Content-Type"] = "application/json"
+    return resp
+
+@app.errorhandler(500)
+def handle_500(e):
+    resp = make_response(jsonify({"error": "Internal Server Error"}), 500)
     resp.headers["Content-Type"] = "application/json"
     return resp
 

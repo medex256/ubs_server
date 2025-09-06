@@ -2647,6 +2647,20 @@ class TradingBot:
     def _pct(a: float, b: float) -> float:
         return (a-b)/b if b else 0.0
 
+    # --- ATR % over short window ---
+    @staticmethod
+    def _atr_pct(candles: List[Dict[str,Any]]) -> float:
+        if len(candles)<2:
+            return 0.0
+        trs=[]
+        prev_close=TradingBot._p(candles[0],'close',0.0)
+        for c in candles[1:]:
+            high=TradingBot._p(c,'high'); low=TradingBot._p(c,'low'); close=TradingBot._p(c,'close')
+            tr=max(high-low, abs(high-prev_close), abs(low-prev_close))
+            trs.append(tr/close if close else 0.0)
+            prev_close=close
+        return float(np.mean(trs)) if trs else 0.0
+
     # --- core scoring per event ---
     def score_event(self, ev: Dict[str, Any]) -> Dict[str, Any]:
         prev = ev.get('previous_candles', []) or []
@@ -2681,6 +2695,28 @@ class TradingBot:
 
         decision='LONG'; conf=0.0
 
+        # ---------------- dynamic momentum vs mean-reversion ----------------
+        magnitude = abs(follow)  # 3-min drift strength
+        # threshold relative to ATR
+        if self._atr_pct(prev+obs)>0:
+            norm_move = magnitude/self._atr_pct(prev+obs)
+        else:
+            norm_move = 0.0
+
+        # If move is small (<0.4 ATR) expect mean-reversion within 30 min
+        if norm_move < 0.4:
+            decision = 'SHORT' if follow>0 else 'LONG'
+            conf = min(0.4, (0.4-norm_move)*0.5 + abs(sent)*0.2)
+        # If move is big (>0.7 ATR) expect momentum continuation
+        elif norm_move > 0.7:
+            decision = 'LONG' if follow>0 else 'SHORT'
+            conf = min(1.0, (norm_move-0.7)*0.5 + abs(sent)*0.3 + vol_ratio*0.05)
+        else:
+            # medium move: use sentiment alignment
+            decision = 'LONG' if sent>=0 else 'SHORT'
+            conf = min(0.6, abs(sent)*0.6 + abs(init)*20)
+
+        # existing pattern rules for large gaps & breakouts override if higher confidence
         # pattern rules
         if abs(gap)>0.008 and ((gap>0 and follow<-0.002) or (gap<0 and follow>0.002)):
             decision = 'SHORT' if gap>0 else 'LONG'

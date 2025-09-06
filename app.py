@@ -401,9 +401,18 @@ def find_extra_channels(connections):
 
 @app.route("/investigate", methods=["POST"])
 def investigate():
-    data = request.get_json(silent=True)
-    if data is None:
-        return jsonify({"networks": []}), 200
+    try:
+        data = request.get_json(force=True, silent=True)
+    except Exception:
+        data = None
+
+    if isinstance(data, dict):
+        networks_data = data.get("networks", [])
+    elif isinstance(data, list):
+        networks_data = data
+    else:
+        networks_data = []
+
     networks_data = data.get("networks", [])
     if isinstance(networks_data, dict):
         networks_data = [networks_data]
@@ -544,7 +553,7 @@ def investigate():
             "extraChannels": extra_channels
         })
 
-    resp = make_response({"networks": result_networks}, 200)
+    resp = make_response(jsonify({"networks": result_networks}), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
 

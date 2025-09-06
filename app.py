@@ -400,6 +400,108 @@ def ticketing_agent():
     resp.headers["Content-Type"] = "application/json"
     return resp
 
+def find_extra_channels(connections):
+    """
+    Return edges that can be removed without increasing the number of connected components.
+    - Undirected graph
+    - Self-loops ignored
+    - Parallel edges: each instance is removable
+    - Flexible field name detection
+    """
+    if not isinstance(connections, list) or not connections:
+        return []
+
+    # Build simple graph adjacency, track original order and multiplicity
+    adjacency = {}  # node -> set(neighbors)
+    original_edges = []  # keep original order and format
+    multiplicity = {}  # key (a,b) where a<b -> count
+
+    def norm(u, v):
+        return (u, v) if u <= v else (v, u)
+
+    # Detect field names from first connection
+    spy_field1, spy_field2 = "spy1", "spy2"
+    if connections:
+        first_conn = connections[0]
+        if isinstance(first_conn, dict):
+            keys = list(first_conn.keys())
+            if len(keys) >= 2:
+                # Try to detect spy field names
+                possible_names = ["spy1", "spy2", "Spy1", "Spy2", "agent1", "agent2", "node1", "node2"]
+                found_fields = [k for k in keys if k in possible_names]
+                if len(found_fields) >= 2:
+                    spy_field1, spy_field2 = found_fields[0], found_fields[1]
+                elif len(keys) == 2:
+                    # If exactly 2 keys, assume they are the spy fields
+                    spy_field1, spy_field2 = keys[0], keys[1]
+
+    for conn in connections:
+        if not isinstance(conn, dict):
+            continue
+        
+        u = conn.get(spy_field1)
+        v = conn.get(spy_field2)
+        if not u or not v or u == v:
+            continue
+
+        # Store original connection format
+        original_edges.append(conn.copy())
+        a, b = norm(u, v)
+        multiplicity[(a, b)] = multiplicity.get((a, b), 0) + 1
+
+        # undirected adjacency
+        if u not in adjacency:
+            adjacency[u] = set()
+        if v not in adjacency:
+            adjacency[v] = set()
+        adjacency[u].add(v)
+        adjacency[v].add(u)
+
+    if not adjacency:
+        return []
+
+    # Tarjan's algorithm to find bridges on the simple graph
+    time_counter = [0]
+    discovery_time = {}
+    low_link = {}
+    parent = {}
+    bridges = set()  # store normalized pairs (a,b)
+
+    def dfs(u):
+        time_counter[0] += 1
+        discovery_time[u] = time_counter[0]
+        low_link[u] = time_counter[0]
+
+        for v in adjacency[u]:
+            if v not in discovery_time:
+                parent[v] = u
+                dfs(v)
+                low_link[u] = min(low_link[u], low_link[v])
+                if low_link[v] > discovery_time[u]:
+                    a, b = norm(u, v)
+                    bridges.add((a, b))
+            elif parent.get(u) != v:
+                low_link[u] = min(low_link[u], discovery_time[v])
+
+    for node in list(adjacency.keys()):
+        if node not in discovery_time:
+            parent[node] = None
+            dfs(node)
+
+    # Select extras from original edges (preserve original format)
+    extras = []
+    for orig_conn in original_edges:
+        u = orig_conn.get(spy_field1)
+        v = orig_conn.get(spy_field2)
+        a, b = norm(u, v)
+        if multiplicity.get((a, b), 0) > 1:
+            # any parallel instance is removable
+            extras.append(orig_conn)
+        elif (a, b) not in bridges:
+            # non-bridge -> on a cycle -> removable
+            extras.append(orig_conn)
+
+    return extras
 
 @app.route("/investigate", methods=["POST"])
 def investigate():

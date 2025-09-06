@@ -30,7 +30,6 @@ def bad_request(message: str, details: Optional[Dict[str, Any]] = None, status_c
 
 
 @app.route("/sailing-club", methods=["POST"])
-@app.route("/sailing-club/submission", methods=["POST"])
 def sailing_club_submission():
     data = request.get_json(silent=True) or {}
     test_cases = data.get("testCases", [])
@@ -1317,7 +1316,7 @@ def duolingo_sort():
                 return bad_request("All elements must be strings for part ONE.")
             raw = s.strip()
             v: Optional[int] = None
-            if re.fullmatch(r"\\d+", raw):
+            if re.fullmatch(r"\d+", raw):
                 try:
                     v = int(raw)
                 except Exception:

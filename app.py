@@ -6,6 +6,7 @@ from scipy import interpolate
 import numpy as np
 from collections import defaultdict, deque
 import re, math
+import time
 
 app = Flask(__name__)
 
@@ -805,6 +806,32 @@ def _scan_unknown_count_at(center: Tuple[int, int], n: int, known_empty: Set[Tup
             unknown += 1
     return unknown
 
+def _update_frontier(state: Dict[str, Any], around: Optional[List[Tuple[int, int]]] = None):
+    n = state["length"]
+    known_empty: Set[Tuple[int, int]] = state["known_empty"]
+    known_walls: Set[Tuple[int, int]] = state["known_walls"]
+    frontier: Set[Tuple[int, int]] = state.setdefault("frontier", set())
+
+    def consider_neighbors(x: int, y: int):
+        for nx, ny, _ in _neighbors4(x, y, n):
+            if (nx, ny) in known_empty or (nx, ny) in known_walls:
+                if (nx, ny) in frontier:
+                    try:
+                        frontier.remove((nx, ny))
+                    except KeyError:
+                        pass
+                continue
+            frontier.add((nx, ny))
+
+    if around:
+        for cx, cy in around:
+            consider_neighbors(cx, cy)
+    else:
+        # Rebuild from scratch
+        frontier.clear()
+        for (ex, ey) in list(known_empty):
+            consider_neighbors(ex, ey)
+
 def _integrate_scan(state: Dict[str, Any], crow_id: str, scan_result: List[List[str]]):
     n = state["length"]
     cx, cy = state["crows"][crow_id]
@@ -825,6 +852,9 @@ def _integrate_scan(state: Dict[str, Any], crow_id: str, scan_result: List[List[
                 state["known_walls"].add((x, y))
     # Always ensure the crow's current cell is empty
     state["known_empty"].add((cx, cy))
+    # Mark this center as scanned and update frontier around the scanned window center
+    state.setdefault("scanned_centers", set()).add((cx, cy))
+    _update_frontier(state, around=[(cx, cy)])
 
 def _process_previous_action(state: Dict[str, Any], previous_action: Dict[str, Any]):
     if not previous_action:
@@ -856,6 +886,7 @@ def _process_previous_action(state: Dict[str, Any], previous_action: Dict[str, A
 
         # Update crow position to move_result (unchanged if hit wall)
         state["crows"][crow_id] = (new_x, new_y)
+        _update_frontier(state, around=[(new_x, new_y)])
 
     elif action == "scan":
         scan_result = previous_action.get("scan_result")
@@ -907,17 +938,33 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
     known_cells = len(state["known_empty"]) + len(state["known_walls"])
     unknown_cells = max(0, total_cells - known_cells)
 
+    # Early scan seeding: perform initial scans to bootstrap knowledge
+    steps = state.get("steps", 0)
+    scanned_centers: Set[Tuple[int, int]] = state.setdefault("scanned_centers", set())
+    if steps < max(2, len(state.get("crows", {}))):
+        best = None
+        for crow_id, (cx, cy) in state["crows"].items():
+            if (cx, cy) in scanned_centers:
+                continue
+            gain = _scan_unknown_count_at((cx, cy), n, state["known_empty"], state["known_walls"])
+            if best is None or gain > best[0]:
+                best = (gain, crow_id)
+        if best is not None and best[0] > 0:
+            return {"action_type": "scan", "crow_id": best[1]}
+
     # Dynamic scan threshold based on remaining unknown area
     if unknown_cells > 0.6 * total_cells:
-        scan_threshold = 10
+        scan_threshold = 8
     elif unknown_cells > 0.3 * total_cells:
-        scan_threshold = 6
+        scan_threshold = 5
     else:
-        scan_threshold = 3
+        scan_threshold = 2
 
     # 1) Consider scanning now from any crow with high expected gain
     best_scan = None  # (gain, crow_id)
     for crow_id, (cx, cy) in state["crows"].items():
+        if (cx, cy) in scanned_centers:
+            continue
         gain = _scan_unknown_count_at((cx, cy), n, state["known_empty"], state["known_walls"])
         if gain >= scan_threshold:
             if best_scan is None or gain > best_scan[0]:
@@ -940,6 +987,8 @@ def _choose_next_action(state: Dict[str, Any]) -> Dict[str, Any]:
         first_dir, dist = _bfs_first_step_direction(state, (sx, sy))
         # Evaluate all reachable known-empty cells as potential scan centers
         for cell, d in dist.items():
+            if cell in scanned_centers:
+                continue
             gain = _scan_unknown_count_at(cell, n, state["known_empty"], state["known_walls"])
             if gain <= 0:
                 continue
@@ -1015,6 +1064,10 @@ def fog_of_wall():
             "known_walls": set(),         # Set[Tuple[int,int]]
             "known_empty": set(),         # Set[Tuple[int,int]]
             "crows": {},                  # Dict[str, Tuple[int,int]]
+            "steps": 0,
+            "start_time": time.time(),
+            "scanned_centers": set(),
+            "frontier": set(),
         }
         for c in crows_list:
             cid = str(c.get("id"))
@@ -1023,6 +1076,7 @@ def fog_of_wall():
             state["crows"][cid] = (x, y)
             if _in_bounds(x, y, length_of_grid):
                 state["known_empty"].add((x, y))
+        _update_frontier(state)
         _fog_state[key] = state
     else:
         # Must exist for subsequent steps
@@ -1034,6 +1088,34 @@ def fog_of_wall():
     previous_action = data.get("previous_action")
     if previous_action:
         _process_previous_action(state, previous_action)
+        # Count an action step after processing its result
+        try:
+            state["steps"] = int(state.get("steps", 0)) + 1
+        except Exception:
+            state["steps"] = 1
+
+    # Guard: avoid timeouts by submitting before budget exhaustion
+    elapsed = time.time() - state.get("start_time", time.time())
+    n = state["length"]
+    if (
+        elapsed > 25.0 or
+        state.get("steps", 0) >= int(0.95 * n * n)
+    ):
+        submission = [f"{x}-{y}" for (x, y) in sorted(state["known_walls"])]
+        response = {
+            "challenger_id": challenger_id,
+            "game_id": game_id,
+            "action_type": "submit",
+            "submission": submission,
+        }
+        # Cleanup state for next test case
+        try:
+            del _fog_state[key]
+        except Exception:
+            pass
+        resp = make_response(jsonify(response), 200)
+        resp.headers["Content-Type"] = "application/json"
+        return resp
 
     # Decide next action
     next_action = _choose_next_action(state)
@@ -1050,6 +1132,13 @@ def fog_of_wall():
         response["direction"] = next_action["direction"]
     if next_action["action_type"] == "submit":
         response["submission"] = next_action["submission"]
+
+    # Cleanup state if we are submitting
+    if next_action["action_type"] == "submit":
+        try:
+            del _fog_state[key]
+        except Exception:
+            pass
 
     resp = make_response(jsonify(response), 200)
     resp.headers["Content-Type"] = "application/json"

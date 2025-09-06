@@ -887,7 +887,7 @@ def _compute_extra_channels(edges: List[Dict]) -> List[Dict]:
 def investigate():
     payload = request.get_json(silent=True)
     if payload is None:
-        return jsonify({"error": "Invalid or missing JSON body"}), 400
+        return jsonify({"networks": []}), 200
 
     #if not isinstance(payload, list):
     #    return jsonify({"error": "Expected a JSON array of networks"}), 400

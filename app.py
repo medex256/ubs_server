@@ -2603,121 +2603,63 @@ def _adv_get_mode_options(mode):
 
 # Trading Bot Core Logic
 class TradingBot:
-    """Advanced crypto trading bot with multi-signal analysis and predictive modeling"""
+    """Crypto trading bot optimized for 30-minute price prediction"""
     
     def __init__(self):
-        # Enhanced sentiment keywords with weights
-        self.bullish_keywords = {
-            # High impact bullish
-            'pump': 3, 'moon': 3, 'breakout': 3, 'surge': 3, 'rally': 3,
-            'adoption': 2.5, 'institutional': 2.5, 'etf': 2.5, 'approval': 2.5,
-            'reserve': 2.5, 'treasury': 2.5, 'strategic': 2,
-            
-            # Medium impact bullish  
-            'bull': 2, 'bullish': 2, 'buy': 2, 'growth': 2, 'positive': 2,
-            'upgrade': 2, 'support': 2, 'breakthrough': 2, 'milestone': 2,
-            'partnership': 1.8, 'investment': 1.8, 'accumulation': 1.8,
-            
-            # Lower impact bullish
-            'innovation': 1.5, 'allocation': 1.5, 'strength': 1.5, 'momentum': 1.5,
-            'gains': 1.5, 'rise': 1.5, 'climb': 1.5, 'uptick': 1.2,
-            'halving': 1.8, 'scarcity': 1.5
-        }
+        # News sentiment analysis
+        self.bullish_keywords = [
+            'buy', 'bull', 'bullish', 'moon', 'pump', 'rally', 'surge', 'breakout', 'adoption',
+            'institutional', 'reserve', 'etf', 'approval', 'partnership', 'growth', 'positive',
+            'upgrade', 'support', 'breakthrough', 'milestone', 'innovation', 'strategic',
+            'investment', 'accumulation', 'halving', 'scarcity', 'treasury', 'allocation',
+            'strength', 'momentum', 'bullmarket', 'uptick', 'gains', 'rise', 'climb'
+        ]
         
-        self.bearish_keywords = {
-            # High impact bearish
-            'crash': 3, 'dump': 3, 'liquidation': 3, 'ban': 3, 'crackdown': 3,
-            'hack': 2.5, 'security': 2.5, 'lawsuit': 2.5, 'regulation': 2.5,
-            
-            # Medium impact bearish
-            'bear': 2, 'bearish': 2, 'sell': 2, 'correction': 2, 'drop': 2,
-            'fall': 2, 'concern': 2, 'risk': 2, 'uncertainty': 2, 'decline': 2,
-            'loss': 2, 'negative': 2, 'weakness': 2, 'breakdown': 2,
-            
-            # Lower impact bearish
-            'volatile': 1.5, 'bubble': 1.5, 'overvalued': 1.5, 'skeptical': 1.5,
-            'warning': 1.5, 'caution': 1.5, 'resistance': 1.2, 'profit-taking': 1.2,
-            'fear': 1.8
-        }
+        self.bearish_keywords = [
+            'sell', 'bear', 'bearish', 'dump', 'crash', 'correction', 'drop', 'fall',
+            'regulation', 'ban', 'crackdown', 'lawsuit', 'hack', 'security', 'concern',
+            'risk', 'volatile', 'uncertainty', 'decline', 'loss', 'liquidation',
+            'bubble', 'overvalued', 'skeptical', 'warning', 'caution', 'negative',
+            'weakness', 'breakdown', 'resistance', 'profit-taking', 'fear'
+        ]
         
-        # High impact entities and keywords that amplify sentiment
-        self.high_impact_entities = {
-            'trump': 2.5, 'biden': 2.5, 'fed': 2.8, 'federal': 2.8, 'government': 2.2,
-            'sec': 2.5, 'cftc': 2.5, 'treasury': 2.8, 'blackrock': 2.8, 'fidelity': 2.5,
-            'vanguard': 2.5, 'grayscale': 2.2, 'microstrategy': 2.2, 'tesla': 2.0,
-            'coinbase': 1.8, 'binance': 1.8, 'whale': 2.0, 'massive': 1.5,
-            'huge': 1.5, 'billions': 1.8, 'millions': 1.5
-        }
-        
-        # Time-based sentiment modifiers
-        self.time_sensitive_keywords = {
-            'now': 1.3, 'today': 1.3, 'breaking': 1.5, 'urgent': 1.4, 'immediate': 1.4,
-            'just': 1.2, 'announced': 1.3, 'confirms': 1.3, 'official': 1.4
-        }
+        # High impact keywords that amplify sentiment
+        self.high_impact_keywords = [
+            'trump', 'biden', 'fed', 'federal', 'government', 'sec', 'cftc', 'treasury',
+            'blackrock', 'fidelity', 'vanguard', 'grayscale', 'microstrategy', 'tesla',
+            'coinbase', 'binance', 'institutional', 'whale', 'massive', 'huge', 'billions'
+        ]
     
     def analyze_sentiment(self, title: str, source: str) -> float:
-        """Enhanced sentiment analysis with weighted keywords and context understanding"""
+        """Simple sentiment analysis for news titles"""
         title_lower = title.lower()
-        words = title_lower.split()
         
-        # Calculate weighted sentiment scores
-        bullish_score = 0.0
-        bearish_score = 0.0
+        # Count keyword matches
+        bullish_score = sum(1 for word in self.bullish_keywords if word in title_lower)
+        bearish_score = sum(1 for word in self.bearish_keywords if word in title_lower)
         
-        # Check for bullish keywords with weights
-        for keyword, weight in self.bullish_keywords.items():
-            if keyword in title_lower:
-                bullish_score += weight
+        # Apply high impact multiplier
+        impact_multiplier = 1.0
+        if any(word in title_lower for word in self.high_impact_keywords):
+            impact_multiplier = 2.0
         
-        # Check for bearish keywords with weights  
-        for keyword, weight in self.bearish_keywords.items():
-            if keyword in title_lower:
-                bearish_score += weight
-                
-        # Apply entity-based amplification
-        entity_multiplier = 1.0
-        for entity, multiplier in self.high_impact_entities.items():
-            if entity in title_lower:
-                entity_multiplier = max(entity_multiplier, multiplier)
+        # Source credibility weighting
+        source_weight = 1.0
+        if source.lower() in ['reuters', 'bloomberg', 'wsj', 'financial times']:
+            source_weight = 1.5
+        elif source.lower() in ['twitter', 'reddit']:
+            source_weight = 0.8
         
-        # Apply time-sensitive modifiers
-        time_multiplier = 1.0
-        for time_word, multiplier in self.time_sensitive_keywords.items():
-            if time_word in title_lower:
-                time_multiplier = max(time_multiplier, multiplier)
+        # Calculate net sentiment
+        net_sentiment = (bullish_score - bearish_score) * impact_multiplier * source_weight
         
-        # Source credibility weighting - more nuanced
-        source_lower = source.lower()
-        if source_lower in ['reuters', 'bloomberg', 'wsj', 'financial times', 'cnbc', 'cnn']:
-            source_weight = 1.4
-        elif source_lower in ['coindesk', 'cointelegraph', 'decrypt']:
-            source_weight = 1.3
-        elif source_lower in ['twitter', 'x.com']:
-            source_weight = 0.9
-        elif source_lower in ['reddit']:
-            source_weight = 0.7
+        # Normalize to [-1, 1] range
+        if net_sentiment > 0:
+            return min(1.0, net_sentiment / 5.0)
+        elif net_sentiment < 0:
+            return max(-1.0, net_sentiment / 5.0)
         else:
-            source_weight = 1.0
-            
-        # Handle negation patterns
-        negation_words = ['not', 'no', 'never', 'none', 'nothing', 'neither', 'nowhere']
-        has_negation = any(neg in words for neg in negation_words)
-        
-        # Calculate net sentiment with all modifiers
-        base_sentiment = bullish_score - bearish_score
-        
-        # Apply negation reversal
-        if has_negation:
-            base_sentiment = -base_sentiment * 0.8  # Slightly weaken negated sentiment
-            
-        # Apply all multipliers
-        final_sentiment = base_sentiment * entity_multiplier * time_multiplier * source_weight
-        
-        # Normalize to [-1, 1] range with better scaling
-        max_possible = 15.0  # Estimated max possible score
-        normalized = final_sentiment / max_possible
-        
-        return max(-1.0, min(1.0, normalized))
+            return 0.0
     
     def calculate_technical_indicators(self, previous_candles: List[Dict], observation_candles: List[Dict]) -> Dict[str, float]:
         """Enhanced technical analysis with multiple indicators"""
@@ -2984,118 +2926,200 @@ class TradingBot:
         return np.mean(price_ranges) * 100  # Convert to percentage
     
     def score_news_event(self, event: Dict) -> Dict[str, Any]:
-        """Clean, rules-based scoring using simple price action around the event."""
-        previous_candles = event.get('previous_candles', []) or []
-        observation_candles = event.get('observation_candles', []) or []
-
-        # Guard: need at least 1 observation candle
+        """
+        Score news event for 30-minute price prediction.
+        Key insight: We need to predict if price will be higher/lower 30 minutes after entry.
+        """
+        title = event.get('title', '')
+        source = event.get('source', '')
+        previous_candles = event.get('previous_candles', [])
+        observation_candles = event.get('observation_candles', [])
+        
         if not observation_candles:
-            return {
-                'event_id': event.get('id'),
-                'decision': 'LONG',
-                'confidence': 0.0
-            }
-
-        def f(c, k, default=0.0):
+            return {'event_id': event.get('id'), 'decision': 'LONG', 'confidence': 0.0}
+        
+        # Helper function to safely get float values
+        def get_price(candle, key, default=0.0):
             try:
-                return float(c.get(k, default))
-            except Exception:
+                return float(candle.get(key, default))
+            except:
                 return default
-
-        # Key prices
-        prev_close = f(previous_candles[-1], 'close', f(observation_candles[0], 'open', 0.0)) if previous_candles else f(observation_candles[0], 'open', 0.0)
-        prev_highs = [f(c, 'high', prev_close) for c in previous_candles[-5:]] if previous_candles else [prev_close]
-        prev_lows = [f(c, 'low', prev_close) for c in previous_candles[-5:]] if previous_candles else [prev_close]
-
+        
+        # Key price points
+        entry_price = get_price(observation_candles[0], 'close')  # Entry = first obs candle close
+        
+        # Previous context
+        prev_close = get_price(previous_candles[-1], 'close', entry_price) if previous_candles else entry_price
+        prev_high = max([get_price(c, 'high', prev_close) for c in previous_candles[-3:]]) if previous_candles else prev_close
+        prev_low = min([get_price(c, 'low', prev_close) for c in previous_candles[-3:]]) if previous_candles else prev_close
+        
+        # Observation window analysis
         obs1 = observation_candles[0]
-        obs2 = observation_candles[1] if len(observation_candles) >= 2 else None
-        obs3 = observation_candles[2] if len(observation_candles) >= 3 else None
-
-        o1_open = f(obs1, 'open'); o1_close = f(obs1, 'close'); o1_high = f(obs1, 'high'); o1_low = f(obs1, 'low')
-        o2_close = f(obs2, 'close', o1_close) if obs2 else o1_close
-        o3_close = f(obs3, 'close', o2_close) if obs3 else o2_close
-
-        def pct(a, b):
-            if b == 0:
-                return 0.0
-            return (a - b) / b
-
-        # Simple candle stats
-        o1_range = max(1e-9, o1_high - o1_low)
-        o1_body = abs(o1_close - o1_open)
-        o1_body_ratio = o1_body / o1_range
-        o1_is_green = o1_close > o1_open
-
-        # Signals
-        max_prev_high = max(prev_highs) if prev_highs else prev_close
-        min_prev_low = min(prev_lows) if prev_lows else prev_close
-
-        breakout_up_margin = pct(o1_close, max_prev_high)
-        breakout_dn_margin = pct(min_prev_low, o1_close)
-        gap_pct = pct(o1_open, prev_close)
-        follow_through = pct(o2_close, o1_close) + pct(o3_close, o2_close)
-        swing_move = pct(o3_close, o1_close)
-
-        # Trend over last 3 previous closes
-        prev_closes = [f(c, 'close', prev_close) for c in previous_candles[-3:]] if previous_candles else [prev_close]
-        trend_slope = 0.0
-        if len(prev_closes) >= 2:
-            trend_slope = pct(prev_closes[-1], prev_closes[0])
-
-        decision = 'LONG'
-        confidence = 0.0
-
-        # Rule 1: Gap reversal (fade overreaction)
-        if abs(gap_pct) >= 0.01:
-            # If price gaps and then moves back toward previous close, fade the gap
-            moved_back = (gap_pct > 0 and o2_close < o1_close) or (gap_pct < 0 and o2_close > o1_close)
-            long_upper_wick = (o1_high - max(o1_open, o1_close)) / o1_range > 0.5
-            long_lower_wick = (min(o1_open, o1_close) - o1_low) / o1_range > 0.5
-            if moved_back or (gap_pct > 0 and long_upper_wick) or (gap_pct < 0 and long_lower_wick):
-                decision = 'SHORT' if gap_pct > 0 else 'LONG'
-                confidence = min(1.0, abs(gap_pct) * 40 + o1_body_ratio * 0.4 + abs(swing_move) * 20)
+        obs2 = observation_candles[1] if len(observation_candles) > 1 else obs1
+        obs3 = observation_candles[2] if len(observation_candles) > 2 else obs2
+        
+        o1_open = get_price(obs1, 'open')
+        o1_close = get_price(obs1, 'close')
+        o1_high = get_price(obs1, 'high')
+        o1_low = get_price(obs1, 'low')
+        o2_close = get_price(obs2, 'close')
+        o3_close = get_price(obs3, 'close')
+        
+        # Calculate key metrics
+        def pct_change(new, old):
+            return (new - old) / old if old != 0 else 0.0
+        
+        # 1. Gap analysis (price reaction to news)
+        gap_size = pct_change(o1_open, prev_close)
+        
+        # 2. Initial reaction strength
+        initial_move = pct_change(o1_close, o1_open)
+        
+        # 3. Follow-through momentum
+        follow_through = pct_change(o3_close, o1_close)
+        
+        # 4. Volume analysis (if available)
+        o1_volume = get_price(obs1, 'volume', 1.0)
+        avg_volume = np.mean([get_price(c, 'volume', 1.0) for c in previous_candles[-3:]]) if previous_candles else 1.0
+        volume_ratio = o1_volume / avg_volume if avg_volume > 0 else 1.0
+        
+        # 5. News sentiment
+        sentiment = self.analyze_sentiment(title, source)
+        
+        # 6. Support/Resistance levels
+        near_resistance = abs(pct_change(o1_close, prev_high)) < 0.005  # Within 0.5% of resistance
+        near_support = abs(pct_change(o1_close, prev_low)) < 0.005      # Within 0.5% of support
+        
+        # Decision logic based on 30-minute prediction patterns
+        
+        # Pattern 1: Strong gap with reversal (fade the news)
+        if abs(gap_size) > 0.008:  # >0.8% gap
+            # If gap is large and price starts reversing, fade it
+            if (gap_size > 0 and follow_through < -0.002) or (gap_size < 0 and follow_through > 0.002):
+                decision = 'SHORT' if gap_size > 0 else 'LONG'
+                confidence = min(1.0, abs(gap_size) * 30 + abs(follow_through) * 50)
                 return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
-
-        # Rule 2: Breakout continuation
-        if breakout_up_margin >= 0.005 and o1_is_green:
-            if follow_through >= 0 or o3_close >= o1_close:
-                decision = 'LONG'
-                confidence = min(1.0, breakout_up_margin * 60 + o1_body_ratio * 0.5 + max(0.0, follow_through) * 20)
-                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
-        if breakout_dn_margin >= 0.005 and not o1_is_green:
-            if follow_through <= 0 or o3_close <= o1_close:
-                decision = 'SHORT'
-                confidence = min(1.0, breakout_dn_margin * 60 + o1_body_ratio * 0.5 + max(0.0, -follow_through) * 20)
-                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
-
-        # Rule 3: Trend continuation if observation aligns with recent trend
-        if abs(trend_slope) >= 0.003:  # ~0.3%
-            if trend_slope > 0 and o1_is_green:
-                decision = 'LONG'
-                confidence = min(1.0, abs(trend_slope) * 100 + o1_body_ratio * 0.3)
-                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
-            if trend_slope < 0 and not o1_is_green:
-                decision = 'SHORT'
-                confidence = min(1.0, abs(trend_slope) * 100 + o1_body_ratio * 0.3)
-                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
-
-        # Rule 4: Early momentum over observation window
-        if abs(swing_move) >= 0.003:
-            decision = 'LONG' if swing_move > 0 else 'SHORT'
-            confidence = min(1.0, abs(swing_move) * 100 + o1_body_ratio * 0.2)
+        
+        # Pattern 2: Breakout with momentum (follow the break)
+        breakout_up = pct_change(o1_close, prev_high) > 0.003  # Break above resistance
+        breakout_down = pct_change(prev_low, o1_close) > 0.003  # Break below support
+        
+        if breakout_up and follow_through > 0:
+            decision = 'LONG'
+            confidence = min(1.0, pct_change(o1_close, prev_high) * 50 + follow_through * 30)
             return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
-
-        # Fallback: use first candle direction with low confidence
-        decision = 'LONG' if o1_is_green else 'SHORT'
-        confidence = min(1.0, o1_body_ratio * 0.3)
+        
+        if breakout_down and follow_through < 0:
+            decision = 'SHORT'
+            confidence = min(1.0, pct_change(prev_low, o1_close) * 50 + abs(follow_through) * 30)
+            return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+        
+        # Pattern 3: High volume + strong sentiment alignment
+        if volume_ratio > 2.0 and abs(sentiment) > 0.3:
+            sentiment_aligned = (sentiment > 0 and initial_move > 0) or (sentiment < 0 and initial_move < 0)
+            if sentiment_aligned and abs(follow_through) > 0.002:
+                decision = 'LONG' if sentiment > 0 else 'SHORT'
+                confidence = min(1.0, abs(sentiment) * 0.8 + volume_ratio * 0.1 + abs(follow_through) * 40)
+                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+        
+        # Pattern 4: Support/Resistance bounce
+        if near_resistance and initial_move < -0.002:
+            decision = 'SHORT'
+            confidence = min(1.0, abs(initial_move) * 50 + 0.3)
+            return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+        
+        if near_support and initial_move > 0.002:
+            decision = 'LONG'
+            confidence = min(1.0, abs(initial_move) * 50 + 0.3)
+            return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+        
+        # Pattern 5: Trend continuation (if observation aligns with recent trend)
+        if len(previous_candles) >= 2:
+            recent_trend = pct_change(prev_close, get_price(previous_candles[-2], 'close', prev_close))
+            if abs(recent_trend) > 0.002:  # Strong recent trend
+                trend_aligned = (recent_trend > 0 and initial_move > 0) or (recent_trend < 0 and initial_move < 0)
+                if trend_aligned and abs(follow_through) > 0.001:
+                    decision = 'LONG' if recent_trend > 0 else 'SHORT'
+                    confidence = min(1.0, abs(recent_trend) * 100 + abs(follow_through) * 30)
+                    return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+        
+        # Pattern 6: Momentum-based (if strong follow-through)
+        if abs(follow_through) > 0.005:  # Strong momentum
+            decision = 'LONG' if follow_through > 0 else 'SHORT'
+            confidence = min(1.0, abs(follow_through) * 40 + volume_ratio * 0.1)
+            return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+        
+        # Fallback: Use sentiment with low confidence
+        if abs(sentiment) > 0.1:
+            decision = 'LONG' if sentiment > 0 else 'SHORT'
+            confidence = min(0.5, abs(sentiment) * 0.5)
+        else:
+            # Final fallback: use initial move direction
+            decision = 'LONG' if initial_move > 0 else 'SHORT'
+            confidence = min(0.3, abs(initial_move) * 20)
+        
         return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
     
     def select_best_trades(self, scored_events: List[Dict], target_count: int = 50) -> List[Dict]:
-        """Simple selection: pick the highest-confidence 50 trades."""
+        """Select best trades with smart portfolio balancing"""
         if not scored_events:
             return []
+        
+        # Sort by confidence
         scored_events.sort(key=lambda x: x.get('confidence', 0.0), reverse=True)
-        return scored_events[:target_count]
+        
+        # Separate by direction
+        long_trades = [t for t in scored_events if t['decision'] == 'LONG']
+        short_trades = [t for t in scored_events if t['decision'] == 'SHORT']
+        
+        # Smart selection: aim for 60-40 split but prioritize high confidence
+        selected = []
+        long_count = 0
+        short_count = 0
+        max_per_direction = int(target_count * 0.7)  # Max 70% in one direction
+        
+        # First pass: select highest confidence trades with balance
+        for trade in scored_events:
+            if len(selected) >= target_count:
+                break
+                
+            if trade['decision'] == 'LONG' and long_count < max_per_direction:
+                selected.append(trade)
+                long_count += 1
+            elif trade['decision'] == 'SHORT' and short_count < max_per_direction:
+                selected.append(trade)
+                short_count += 1
+        
+        # Second pass: fill remaining slots
+        if len(selected) < target_count:
+            remaining = [t for t in scored_events if t not in selected]
+            needed = target_count - len(selected)
+            selected.extend(remaining[:needed])
+        
+        # Ensure minimum diversity (at least 20% of each direction)
+        final_long = [t for t in selected if t['decision'] == 'LONG']
+        final_short = [t for t in selected if t['decision'] == 'SHORT']
+        min_minority = max(1, int(target_count * 0.2))
+        
+        if len(final_long) < min_minority:
+            # Need more LONG trades
+            unused_long = [t for t in long_trades if t not in selected]
+            if unused_long:
+                needed = min(min_minority - len(final_long), len(unused_long))
+                # Replace lowest confidence SHORT trades
+                final_short.sort(key=lambda x: x['confidence'])
+                selected = [t for t in selected if t not in final_short[:needed]] + unused_long[:needed]
+        
+        elif len(final_short) < min_minority:
+            # Need more SHORT trades
+            unused_short = [t for t in short_trades if t not in selected]
+            if unused_short:
+                needed = min(min_minority - len(final_short), len(unused_short))
+                # Replace lowest confidence LONG trades
+                final_long.sort(key=lambda x: x['confidence'])
+                selected = [t for t in selected if t not in final_long[:needed]] + unused_short[:needed]
+        
+        return selected[:target_count]
 
 @app.route("/trading-bot", methods=["POST"])
 def trading_bot():

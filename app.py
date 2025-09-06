@@ -4,13 +4,19 @@ from typing import Any, Dict, List, Tuple, Optional, Set
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
+try:
+    # When running as a package: `python -m ubs_server.app` or `flask run` with APP=ubs_server.app
+    from .utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
+except Exception:
+    # When running directly: `python app.py`
+    from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
 from collections import defaultdict, deque, Counter
 import re, math
 
 app = Flask(__name__)
 
 # Import numeral helpers from utils
-from .utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
+# from utils import roman_to_int, parse_english_number, parse_german_number, chinese_to_int, classify_representation
 app.config['JSON_SORT_KEYS'] = False
 app.json.sort_keys = False
 

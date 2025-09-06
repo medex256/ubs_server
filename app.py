@@ -381,23 +381,25 @@ def find_extra_channels(connections):
 def investigate():
     """
     Analyze spy networks to find extra channels that can be safely removed.
+    Always echo back each provided networkId, even if the network array is missing/invalid.
     """
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"networks": []}), 200
-
+    data = request.get_json(silent=True) or {}
     networks_data = data.get("networks", [])
     if not isinstance(networks_data, list):
-        return jsonify({"networks": []}), 200
+        networks_data = []
 
     result_networks = []
     for item in networks_data:
         if not isinstance(item, dict):
             continue
+
         network_id = item.get("networkId")
-        network_edges = item.get("network", [])
-        if not network_id or not isinstance(network_edges, list):
+        if not network_id:
             continue
+
+        network_edges = item.get("network")
+        if not isinstance(network_edges, list):
+            network_edges = []
 
         extra_channels = find_extra_channels(network_edges)
         result_networks.append({

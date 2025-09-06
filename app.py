@@ -885,11 +885,6 @@ def _compute_extra_channels(edges: List[Dict]) -> List[Dict]:
 @app.post("/investigate")
 def investigate():
     payload = request.get_json(silent=True)
-    if payload is None:
-        return jsonify({"networks": []}), 200
-
-    #if not isinstance(payload, list):
-    #    return jsonify({"error": "Expected a JSON array of networks"}), 400
 
     result_networks = []
     for item in payload:

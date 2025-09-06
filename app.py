@@ -2915,8 +2915,17 @@ class TradingBot:
 def trading_bot():
     try:
         payload = request.get_json(silent=True)
+        if payload is None:
+            payload = request.get_json(force=True, silent=True)
+        # Normalize object payloads to list if user wrapped events
+        if isinstance(payload, dict):
+            for key in ('events', 'data', 'items', 'news'):
+                arr = payload.get(key)
+                if isinstance(arr, list):
+                    payload = arr
+                    break
         if not isinstance(payload, list):
-            return bad_request('Expected array of news events')
+            return bad_request('Expected a JSON array of news events')
         bot=TradingBot()
         scored=[bot.score_event(ev) for ev in payload if isinstance(ev, dict) and 'id' in ev]
         if not scored:

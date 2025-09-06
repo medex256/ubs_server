@@ -47,13 +47,9 @@ def as_xy(pair: Any) -> Optional[Tuple[float, float]]:
 
 @app.route("/ticketing-agent", methods=["POST"])
 def ticketing_agent():
-    content_type = request.headers.get("Content-Type", "")
-    if not content_type.lower().startswith("application/json"):
-        return bad_request("Unsupported Media Type. Use Content-Type: application/json.", status_code=415)
-
     data = request.get_json(silent=True)
     if data is None:
-        return bad_request("Invalid or malformed JSON body.")
+        return bad_request("Invalid JSON body.")
 
 
     customers: List[Dict[str, Any]] = data.get("customers", [])
@@ -68,13 +64,12 @@ def ticketing_agent():
         name = c.get("name")
         loc = as_xy(c.get("booking_center_location"))
         if not name or loc is None:
-            # Skip invalid concert entries
             continue
         concert_by_name[name] = c
         concert_locations[name] = loc
 
-    assignments: List[Dict[str, Any]] = []
-    unassigned: List[Dict[str, Any]] = []
+    # mapping { customer_name: concert_name }
+    result_map: Dict[str, str] = {}
 
     for cust in customers:
         cname = cust.get("name") or ""
@@ -82,58 +77,57 @@ def ticketing_agent():
         cloc = as_xy(cust.get("location"))
         card = cust.get("credit_card")
 
-        reason = None
-        chosen_concert = None
+        vip_points = 100 if vip is True else 0
 
-        # Priority by credit card mapping
-        if isinstance(card, str) and card in priority_map:
-            preferred = priority_map.get(card)
-            if isinstance(preferred, str) and preferred in concert_by_name:
-                chosen_concert = preferred
-                reason = f"priority({card})"
+        card_priority_concert: Optional[str] = None
+        if isinstance(card, str):
+            target = priority_map.get(card)
+            if isinstance(target, str) and target in concert_by_name:
+                card_priority_concert = target
 
-        # Otherwise pick nearest booking center
-        if chosen_concert is None and cloc is not None and concert_locations:
+        distances: Dict[str, float] = {}
+        if cloc is not None and concert_locations:
             cx, cy = cloc
-            best_name = None
-            best_dist = None
             for name, (x, y) in concert_locations.items():
-                d = hypot(cx - x, cy - y)
-                if best_dist is None or d < best_dist:
-                    best_dist = d
-                    best_name = name
-            if best_name is not None:
-                chosen_concert = best_name
-                reason = "nearest"
+                distances[name] = hypot(cx - x, cy - y)
 
-        record = {
-            "customer": cname,
-            "vip_status": vip,
-            "credit_card": card,
-        }
-
-        if chosen_concert:
-            record.update({
-                "concert": chosen_concert,
-                "reason": reason
-            })
-            assignments.append(record)
+        latency_points: Dict[str, float] = {}
+        if distances:
+            d_values = list(distances.values())
+            dmin, dmax = min(d_values), max(d_values)
+            if dmax == dmin:
+                for name in concert_by_name.keys():
+                    latency_points[name] = 30.0
+            else:
+                span = dmax - dmin
+                for name, d in distances.items():
+                    latency_points[name] = 30.0 * (dmax - d) / span
         else:
-            record.update({"error": "no_concert_available_or_invalid_location"})
-            unassigned.append(record)
+            for name in concert_by_name.keys():
+                latency_points[name] = 0.0
 
-    response_body = {
-        "assignments": assignments,
-        "unassigned": unassigned,
-        "stats": {
-            "customers": len(customers),
-            "concerts": len(concert_by_name),
-            "assigned": len(assignments),
-            "unassigned": len(unassigned)
-        }
-    }
+        best_name: Optional[str] = None
+        best_score: float = float("-inf")
+        for name in concert_by_name.keys():
+            score = vip_points + latency_points.get(name, 0.0)
+            if card_priority_concert == name:
+                score += 50.0
 
-    resp = make_response(jsonify(response_body), 200)
+            if score > best_score:
+                best_score = score
+                best_name = name
+            elif score == best_score and best_name is not None:
+                d_curr = distances.get(name, float("inf"))
+                d_best = distances.get(best_name, float("inf"))
+                if d_curr < d_best:
+                    best_name = name
+                elif d_curr == d_best and name < best_name:
+                    best_name = name
+
+        if best_name is not None:
+            result_map[cname] = best_name
+            
+    resp = make_response(jsonify(result_map), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
 

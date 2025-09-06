@@ -1663,6 +1663,31 @@ def _ink_max_gain_cycle(n: int, edges: List[Tuple[int, int, float, float]], rate
     return best_cycle, best_gain
 
 
+def _ink_canonicalize_cycle(path_idx: List[int]) -> List[int]:
+    # Ensure closed loop and rotate to start at minimal node index for determinism
+    if not path_idx or len(path_idx) < 2:
+        return path_idx
+    cycle = path_idx[:]
+    if cycle[0] != cycle[-1]:
+        cycle.append(cycle[0])
+    # Work on unique part (exclude last duplicate)
+    core = cycle[:-1]
+    # Find position of minimal index
+    min_idx = min(core)
+    positions = [i for i, v in enumerate(core) if v == min_idx]
+    # Choose the rotation whose second element is minimal as tiebreaker
+    best_rot = None
+    best_key = None
+    for pos in positions:
+        rot = core[pos:] + core[:pos]
+        key = (rot[0], rot[1] if len(rot) > 1 else -1, len(rot))
+        if best_key is None or key < best_key:
+            best_key = key
+            best_rot = rot
+    best_rot.append(best_rot[0])
+    return best_rot
+
+
 @app.route("/The-Ink-Archive", methods=["POST"]) 
 def the_ink_archive():
     payload = request.get_json(silent=True)
@@ -1677,11 +1702,15 @@ def the_ink_archive():
     rates1 = part1.get("rates", []) if isinstance(part1, dict) else []
     n1, edges1, rate_map1 = _ink_build_graph(goods1 if isinstance(goods1, list) else [], rates1)
 
-    path1_idx = _ink_bellman_ford_any_cycle(n1, edges1) if n1 > 0 else None
-    if path1_idx:
-        prod1, gain1 = _ink_product_and_gain_percent(path1_idx, rate_map1)
-        path1_names = [goods1[i] for i in path1_idx]
-        results.append({"path": path1_names, "gain": gain1})
+    if n1 > 0:
+        # For Part I, return the most profitable cycle as well (stable and aligns with samples)
+        best_cycle1, best_gain1 = _ink_max_gain_cycle(n1, edges1, rate_map1)
+        if best_cycle1:
+            can1 = _ink_canonicalize_cycle(best_cycle1)
+            path1_names = [goods1[i] for i in can1]
+            results.append({"path": path1_names, "gain": best_gain1})
+        else:
+            results.append({"path": [], "gain": 0.0})
     else:
         results.append({"path": [], "gain": 0.0})
 
@@ -1694,7 +1723,8 @@ def the_ink_archive():
     if n2 > 0:
         best_cycle2, best_gain2 = _ink_max_gain_cycle(n2, edges2, rate_map2)
         if best_cycle2:
-            path2_names = [goods2[i] for i in best_cycle2]
+            can2 = _ink_canonicalize_cycle(best_cycle2)
+            path2_names = [goods2[i] for i in can2]
             results.append({"path": path2_names, "gain": best_gain2})
         else:
             results.append({"path": [], "gain": 0.0})

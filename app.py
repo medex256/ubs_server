@@ -2917,24 +2917,26 @@ def trading_bot():
         payload = request.get_json(silent=True)
         if payload is None:
             payload = request.get_json(force=True, silent=True)
-        # Normalize object payloads to list if user wrapped events
+        # If it's a wrapped object, try common keys
         if isinstance(payload, dict):
             for key in ('events', 'data', 'items', 'news'):
-                arr = payload.get(key)
-                if isinstance(arr, list):
-                    payload = arr
+                if isinstance(payload.get(key), list):
+                    payload = payload[key]
                     break
+            else:
+                # Single-object payload: treat as one event
+                payload = [payload]
         if not isinstance(payload, list):
             return bad_request('Expected a JSON array of news events')
-        bot=TradingBot()
-        scored=[bot.score_event(ev) for ev in payload if isinstance(ev, dict) and 'id' in ev]
+        bot = TradingBot()
+        scored = [bot.score_event(ev) for ev in payload if isinstance(ev, dict) and 'id' in ev]
         if not scored:
             return bad_request('No valid events')
-        selected=bot.pick_trades(scored, 50)
-        resp=[{'id':t['event_id'], 'decision':t['decision']} for t in selected]
-        return jsonify(resp),200
+        selected = bot.pick_trades(scored, 50)
+        resp = [{'id': t['event_id'], 'decision': t['decision']} for t in selected]
+        return jsonify(resp), 200
     except Exception as e:
-        return bad_request(f'Bot error: {e}',500)
+        return bad_request(f'Bot error: {e}', 500)
 
 if __name__ == "__main__":
     # For local development only

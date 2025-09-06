@@ -1,10 +1,9 @@
 from flask import Flask, request, jsonify, make_response
 from math import hypot
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Set
 from scipy.stats import linregress
 from scipy import interpolate
 import numpy as np
-from typing import Any, Dict, List, Tuple, Optional, Set
 from collections import defaultdict, deque
 
 app = Flask(__name__)
@@ -368,11 +367,11 @@ def investigate():
     """
     data = request.get_json(silent=True)
     if data is None:
-        return bad_request("Invalid JSON body.")
+        return jsonify({"networks": []}), 200
     
     networks_data = data.get("networks", [])
     if not isinstance(networks_data, list):
-        return bad_request("networks must be a list.")
+        return jsonify({"networks": []}), 200
     
     result_networks = []
     

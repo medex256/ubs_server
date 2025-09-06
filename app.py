@@ -2001,6 +2001,115 @@ def the_ink_archive():
     resp.headers["Content-Type"] = "application/json"
     return resp
 
+@app.route("/the-mages-gambit", methods=["POST"])
+def mages_gambit():
+    """
+    Calculate the minimum time Klein needs to defeat all undead and join the expedition.
+    
+    Expected input format:
+    [
+        {
+            "intel": [[front, mp_cost], ...],  # Sequence of undead attacks
+            "reserve": int,                     # Maximum mana capacity
+            "fronts": int,                     # Number of fronts (unused in calculation)
+            "stamina": int                     # Number of spells before cooldown required
+        },
+        ...
+    ]
+    
+    Returns:
+    [
+        {"time": int},  # Minimum time in minutes
+        ...
+    ]
+    """
+    try:
+        payload = request.get_json()
+        if not isinstance(payload, list):
+            return jsonify({"error": "Expected array of test cases"}), 400
+        
+        results = []
+        
+        for test_case in payload:
+            if not isinstance(test_case, dict):
+                return jsonify({"error": "Each test case must be an object"}), 400
+            
+            intel = test_case.get("intel", [])
+            reserve = test_case.get("reserve", 0)
+            fronts = test_case.get("fronts", 0)  # Not used in calculation but validated
+            stamina = test_case.get("stamina", 0)
+            
+            # Validate inputs
+            if not isinstance(intel, list) or not isinstance(reserve, int) or not isinstance(stamina, int):
+                return jsonify({"error": "Invalid input types"}), 400
+            
+            if reserve <= 0 or stamina <= 0:
+                return jsonify({"error": "Reserve and stamina must be positive"}), 400
+            
+            for attack in intel:
+                if not isinstance(attack, list) or len(attack) != 2:
+                    return jsonify({"error": "Each intel entry must be [front, mp_cost]"}), 400
+                front, mp_cost = attack
+                if not isinstance(front, int) or not isinstance(mp_cost, int):
+                    return jsonify({"error": "Front and MP cost must be integers"}), 400
+                if front < 1 or front > fronts:
+                    return jsonify({"error": f"Front must be between 1 and {fronts}"}), 400
+                if mp_cost < 1 or mp_cost > reserve:
+                    return jsonify({"error": f"MP cost must be between 1 and {reserve}"}), 400
+            
+            # Calculate minimum time
+            min_time = calculate_mage_combat_time(intel, reserve, stamina)
+            results.append({"time": min_time})
+        
+        return jsonify(results), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def calculate_mage_combat_time(intel, reserve, stamina):
+    """
+    Calculate the minimum time needed for Klein to defeat all undead.
+    
+    Args:
+        intel: List of [front, mp_cost] representing undead attacks in sequence
+        reserve: Maximum mana capacity
+        stamina: Number of spells that can be cast before cooldown required
+    
+    Returns:
+        int: Minimum time in minutes
+    """
+    current_mp = reserve
+    current_stamina = stamina
+    total_time = 0
+    last_front = None
+    
+    for front, mp_cost in intel:
+        # Check if we need cooldown before this attack
+        had_cooldown = False
+        if current_mp < mp_cost or current_stamina < 1:
+            # Force cooldown to recover resources
+            total_time += 10  # Cooldown takes 10 minutes
+            current_mp = reserve
+            current_stamina = stamina
+            had_cooldown = True
+        
+        # Execute the attack
+        # If same front as last attack AND no cooldown happened, extend AOE (0 extra time)
+        if front == last_front and not had_cooldown:
+            spell_time = 0  # Extend AOE, no extra time
+        else:
+            spell_time = 10  # New target or after cooldown
+            
+        total_time += spell_time
+        current_mp -= mp_cost
+        current_stamina -= 1
+        last_front = front
+    
+    # Must end with cooldown to be ready for expedition
+    total_time += 10
+    
+    return total_time
+
 if __name__ == "__main__":
     # For local development only
     # app.run()

@@ -414,108 +414,137 @@ def princess_diaries():
     tasks = data.get("tasks", [])
     subway = data.get("subway", [])
     starting_station = data.get("starting_station")
-    
+
     if not isinstance(tasks, list) or not isinstance(subway, list) or starting_station is None:
         return bad_request("Invalid input format.")
     if not tasks:
         return jsonify({"max_score": 0, "min_fee": 0, "schedule": []}), 200
-    
-    # Efficient preprocessing
-    tasks.sort(key=lambda t: t["start"])
-    
-    # Build compact distance matrix
+
+    # 1) Compress stations and build adjacency with min edge weights
     stations = {starting_station}
     for t in tasks:
         stations.add(t["station"])
+    all_nodes = set(stations)
     for r in subway:
-        if len(r.get("connection", [])) == 2:
-            stations.update(r["connection"])
-    
-    idx_of = {s: i for i, s in enumerate(stations)}
-    n_st = len(stations)
-    
-    dist = [[float('inf')] * n_st for _ in range(n_st)]
-    for i in range(n_st):
-        dist[i][i] = 0
-    
-    for r in subway:
-        u, v = r.get("connection", [None, None])
-        fee = r.get("fee", 0)
-        if u in idx_of and v in idx_of:
-            iu, iv = idx_of[u], idx_of[v]
-            dist[iu][iv] = dist[iv][iu] = min(dist[iu][iv], fee)
-    
-    # Floyd-Warshall
-    for k in range(n_st):
-        for i in range(n_st):
-            for j in range(n_st):
-                dist[i][j] = min(dist[i][j], dist[i][k] + dist[k][j])
-    
-    starting_idx = idx_of[starting_station]
-    
-    # Optimized memoization with sys.setrecursionlimit if needed
-    import sys
-    sys.setrecursionlimit(10000)
-    
-    memo = {}
-    
-    def dp(index, last_task_idx):
-        if index == len(tasks):
-            return_fee = 0
-            if last_task_idx != -1:
-                last_idx = idx_of[tasks[last_task_idx]["station"]]
-                return_fee = dist[last_idx][starting_idx]
-            return (0, return_fee, [])
-        
-        key = (index, last_task_idx)
-        if key in memo:
-            return memo[key]
-        
-        # Skip option
-        skip_result = dp(index + 1, last_task_idx)
-        
-        # Take option (if valid)
-        take_result = (0, float('inf'), [])
-        curr_task = tasks[index]
-        
-        can_take = True
-        if last_task_idx != -1:
-            if tasks[last_task_idx]["end"] > curr_task["start"]:
-                can_take = False
-        
-        if can_take:
-            curr_idx = idx_of[curr_task["station"]]
-            
-            if last_task_idx == -1:
-                travel_fee = dist[starting_idx][curr_idx]
-            else:
-                prev_idx = idx_of[tasks[last_task_idx]["station"]]
-                travel_fee = dist[prev_idx][curr_idx]
-            
-            next_score, next_fee, next_schedule = dp(index + 1, index)
-            
-            take_score = curr_task["score"] + next_score
-            take_fee = travel_fee + next_fee
-            take_schedule = [curr_task["name"]] + next_schedule
-            take_result = (take_score, take_fee, take_schedule)
-        
-        # Choose better option
-        if take_result[0] > skip_result[0] or (take_result[0] == skip_result[0] and take_result[1] < skip_result[1]):
-            result = take_result
-        else:
-            result = skip_result
-        
-        memo[key] = result
-        return result
-    
-    max_score, min_fee, schedule = dp(0, -1)
-    
-    return jsonify({
-        "max_score": max_score,
-        "min_fee": min_fee,
-        "schedule": schedule
-    }), 200
+        conn = r.get("connection", [])
+        if len(conn) == 2:
+            all_nodes.add(conn[0]); all_nodes.add(conn[1])
 
+    idx_of = {s: i for i, s in enumerate(all_nodes)}
+    N = len(all_nodes)
+
+    adj = [dict() for _ in range(N)]
+    for r in subway:
+        conn = r.get("connection", [])
+        fee = r.get("fee", 0)
+        if len(conn) == 2:
+            u, v = idx_of[conn[0]], idx_of[conn[1]]
+            w = adj[u].get(v, float('inf'))
+            if fee < w:
+                adj[u][v] = fee
+                adj[v][u] = fee
+    adj = [ [(v, w) for v, w in row.items()] for row in adj ]
+
+    # 2) Compute shortest paths only from needed sources using Dijkstra
+    import heapq
+
+    def dijkstra(src: int):
+        dist = [float('inf')] * N
+        dist[src] = 0
+        h = [(0, src)]
+        while h:
+            d, u = heapq.heappop(h)
+            if d != dist[u]:
+                continue
+            for v, w in adj[u]:
+                nd = d + w
+                if nd < dist[v]:
+                    dist[v] = nd
+                    heapq.heappush(h, (nd, v))
+        return dist
+
+    needed_sources = {idx_of[starting_station]}
+    for t in tasks:
+        needed_sources.add(idx_of[t["station"]])
+
+    dist_from = {}
+    for src in needed_sources:
+        dist_from[src] = dijkstra(src)
+
+    s_idx = idx_of[starting_station]
+
+    # 3) Sort tasks and prepare arrays
+    tasks.sort(key=lambda t: t["start"])
+    n = len(tasks)
+    task_station = [idx_of[t["station"]] for t in tasks]
+    starts = [t["start"] for t in tasks]
+    ends = [t["end"] for t in tasks]
+    scores = [t["score"] for t in tasks]
+    names = [t["name"] for t in tasks]
+
+    # first_compatible[i]: first j > i with starts[j] >= ends[i] (binary search)
+    first_compatible = [n] * n
+    for i in range(n):
+        lo, hi = i + 1, n
+        ei = ends[i]
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if starts[mid] >= ei:
+                hi = mid
+            else:
+                lo = mid + 1
+        first_compatible[i] = lo
+
+    # 4) DP: best schedule starting at task i (without initial s0->i cost)
+    dp_score = [0] * n
+    dp_fee = [0] * n
+    dp_next = [n] * n  # next index, or n for end
+
+    for i in range(n - 1, -1, -1):
+        ui = task_station[i]
+
+        # Option A: end after i (return home)
+        best_score = scores[i]
+        best_fee = dist_from[ui][s_idx]
+        best_next = n
+
+        # Option B: go to any compatible next task j
+        j0 = first_compatible[i]
+        for j in range(j0, n):
+            vj = task_station[j]
+            sc = scores[i] + dp_score[j]
+            fee = dist_from[ui][vj] + dp_fee[j]
+            if sc > best_score or (sc == best_score and fee < best_fee):
+                best_score = sc
+                best_fee = fee
+                best_next = j
+
+        dp_score[i] = best_score
+        dp_fee[i] = best_fee
+        dp_next[i] = best_next
+
+    # 5) Choose best starting task (add initial s0->first cost), also allow empty schedule
+    max_score = 0
+    min_fee = 0
+    start_idx = n  # n means choose nothing
+
+    for i in range(n):
+        ui = task_station[i]
+        total_score = dp_score[i]
+        total_fee = dist_from[s_idx][ui] + dp_fee[i]
+        if total_score > max_score or (total_score == max_score and total_fee < min_fee):
+            max_score = total_score
+            min_fee = total_fee
+            start_idx = i
+
+    # 6) Reconstruct schedule
+    schedule = []
+    i = start_idx
+    while i < n:
+        schedule.append(names[i])
+        i = dp_next[i]
+
+    return jsonify({"max_score": max_score, "min_fee": min_fee, "schedule": schedule}), 200
 
    
 if __name__ == "__main__":

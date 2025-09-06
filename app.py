@@ -2748,8 +2748,6 @@ def trading_bot():
     except Exception as e:
         return bad_request(f'Bot error: {e}',500)
 
-*** End Patch
-
 if __name__ == "__main__":
     # For local development only
     app.run()

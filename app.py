@@ -399,64 +399,150 @@ def find_extra_channels(connections):
 
 @app.route("/investigate", methods=["POST"])
 def investigate():
-    """
-    Analyze spy networks to find extra channels that can be safely removed.
-    Must echo back the exact networkId from the request to avoid 'network not found' errors.
-    """
-    try:
-        # Simplified JSON parsing
-        data = request.get_json(silent=True) or {}
-    except Exception:
-        data = {}
-
-    # Extract networks array - handle all possible structures
+    data = request.get_json(silent=True)
     networks_data = data.get("networks", [])
     if isinstance(networks_data, dict):
-        # Convert single object to list (fixes common API usage error)
         networks_data = [networks_data]
     if not isinstance(networks_data, list):
         networks_data = []
 
+    def _normalize_edge(edge):
+        # Returns a tuple (u, v) or None if unrecognized
+        if isinstance(edge, (list, tuple)) and len(edge) == 2:
+            return edge[0], edge[1]
+        if isinstance(edge, dict):
+            candidates = [
+                ("from", "to"), ("source", "target"),
+                ("u", "v"), ("a", "b"),
+                ("node1", "node2"), ("x", "y"),
+                ("spy1", "spy2")
+            ]
+            for k1, k2 in candidates:
+                if k1 in edge and k2 in edge:
+                    return edge[k1], edge[k2]
+        return None
+
+    class DSU:
+        def __init__(self):
+            self.parent = {}
+            self.rank = {}
+        def find(self, x):
+            if x not in self.parent:
+                self.parent[x] = x
+                self.rank[x] = 0
+                return x
+            # Path compression
+            while self.parent[x] != x:
+                self.parent[x] = self.parent[self.parent[x]]
+                x = self.parent[x]
+            return x
+        def union(self, x, y):
+            rx, ry = self.find(x), self.find(y)
+            if rx == ry:
+                return False  # union would create a cycle
+            if self.rank[rx] < self.rank[ry]:
+                self.parent[rx] = ry
+            elif self.rank[rx] > self.rank[ry]:
+                self.parent[ry] = rx
+            else:
+                self.parent[ry] = rx
+                self.rank[rx] += 1
+            return True
+
     result_networks = []
-    
-    # Process each network in the request
     for item in networks_data:
         if not isinstance(item, dict):
             continue
-
-        # CRITICAL FIX: Get networkId and preserve it exactly as is
         network_id = item.get("networkId")
-        
-        # Skip items without a networkId
         if network_id is None:
             continue
 
-        # Get network edges
-        network_edges = item.get("network", [])
-        if not isinstance(network_edges, list):
-            network_edges = []
+        edges = item.get("network", [])
+        if not isinstance(edges, list):
+            edges = []
 
-        # Find extra channels
-        try:
-            extra_channels = find_extra_channels(network_edges)
-        except Exception:
-            # Fallback: return empty list if algorithm fails
-            extra_channels = []
+        # First pass: build a spanning forest, tracking which edges are used
+        dsu = DSU()
+        included_flags = [False] * len(edges)
+        normalized = [None] * len(edges)
+        for i, edge in enumerate(edges):
+            norm = _normalize_edge(edge)
+            normalized[i] = norm
+            if norm is None:
+                continue
+            u, v = norm
+            if dsu.union(u, v):
+                # Edge connects two different components; keep it in the forest
+                included_flags[i] = True
 
-        # Build response with exact same networkId
+        # Build adjacency from included (tree) edges for path discovery
+        adjacency = {}
+        def add_adj(a, b):
+            adjacency.setdefault(a, set()).add(b)
+            adjacency.setdefault(b, set()).add(a)
+        for i, ok in enumerate(included_flags):
+            if ok and normalized[i] is not None:
+                u, v = normalized[i]
+                add_adj(u, v)
+
+        # For each non-included edge, mark all edges on the unique tree path between its endpoints
+        # plus the edge itself as being part of a cycle
+        cycle_edge_set = set()  # set of frozenset({u,v})
+
+        def path_edges(u, v):
+            # BFS to find path in the tree, returns list of edges (u_i, v_i)
+            if u not in adjacency or v not in adjacency:
+                return []
+            from collections import deque
+            q = deque([u])
+            parent = {u: None}
+            while q:
+                x = q.popleft()
+                if x == v:
+                    break
+                for y in adjacency.get(x, []):
+                    if y not in parent:
+                        parent[y] = x
+                        q.append(y)
+            if v not in parent:
+                return []
+            # Reconstruct edges along path v -> u
+            edges_on_path = []
+            curr = v
+            while parent[curr] is not None:
+                p = parent[curr]
+                edges_on_path.append((p, curr))
+                curr = p
+            return edges_on_path
+
+        for i, edge in enumerate(edges):
+            if normalized[i] is None:
+                continue
+            if not included_flags[i]:
+                u, v = normalized[i]
+                # mark the non-tree edge itself
+                cycle_edge_set.add(frozenset((u, v)))
+                # mark the tree path between u and v
+                for a, b in path_edges(u, v):
+                    cycle_edge_set.add(frozenset((a, b)))
+
+        # Collect original edges whose endpoints lie on any detected cycle
+        extra_channels = []
+        for i, edge in enumerate(edges):
+            norm = normalized[i]
+            if norm is None:
+                continue
+            if frozenset(norm) in cycle_edge_set:
+                extra_channels.append(edge)
+
         result_networks.append({
             "networkId": network_id,
             "extraChannels": extra_channels
         })
 
-    # Build final response
-    response_data = {"networks": result_networks}
-    
-    # Return with proper headers
-    resp = make_response(jsonify(response_data), 200)
+    resp = make_response(jsonify({"networks": result_networks}), 200)
     resp.headers["Content-Type"] = "application/json"
     return resp
-
 
 @app.route("/")
 def root():

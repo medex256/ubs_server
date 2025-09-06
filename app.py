@@ -194,7 +194,7 @@ def blankety():
 def trivia():
     res = {
         "answers": [
-            4,  # "Trivia!": How many challenges are there this year, which title ends with an exclamation mark?
+            3,  # zhb  "Trivia!": How many challenges are there this year, which title ends with an exclamation mark?
             1,  # "Ticketing Agent": What type of tickets is the ticketing agent handling?
             2,  # "Blankety Blanks": How many lists and elements per list are included in the dataset you must impute?
             2,  # "Princess Diaries": What's Princess Mia's cat name in the movie Princess Diaries?

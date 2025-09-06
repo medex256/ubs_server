@@ -21,7 +21,7 @@ def bad_request(message: str, details: Optional[Dict[str, Any]] = None, status_c
     return resp
 
 
-@app.route("/sailing-club/submission", methods=["POST"])
+@app.route("/sailing-club", methods=["POST"])
 def sailing_club_submission():
     data = request.get_json(silent=True) or {}
     test_cases = data.get("testCases", [])

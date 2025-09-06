@@ -880,8 +880,8 @@ def investigate():
     if payload is None:
         return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    if not isinstance(payload, list):
-        return jsonify({"error": "Expected a JSON array of networks"}), 400
+    #if not isinstance(payload, list):
+    #    return jsonify({"error": "Expected a JSON array of networks"}), 400
 
     result_networks = []
     for item in payload:

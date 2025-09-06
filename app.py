@@ -2984,206 +2984,118 @@ class TradingBot:
         return np.mean(price_ranges) * 100  # Convert to percentage
     
     def score_news_event(self, event: Dict) -> Dict[str, Any]:
-        """Enhanced scoring with multi-factor analysis optimized for 30-minute predictions"""
-        # Extract data
-        title = event.get('title', '')
-        source = event.get('source', '')
-        previous_candles = event.get('previous_candles', [])
-        observation_candles = event.get('observation_candles', [])
-        
-        # Calculate components
-        sentiment = self.analyze_sentiment(title, source)
-        technical = self.calculate_technical_indicators(previous_candles, observation_candles)
-        
-        # Get entry price (first observation candle close)
-        entry_price = 0.0
-        if observation_candles:
-            entry_price = float(observation_candles[0].get('close', 0))
-        
-        # Enhanced technical signal combining multiple indicators
-        # Weights optimized for 30-minute prediction horizon
-        technical_signal = (
-            technical['momentum'] * 0.25 +           # Short-term momentum crucial
-            technical['price_trend'] * 0.20 +        # Trend direction 
-            technical['candle_pattern'] * 0.15 +     # Pattern recognition
-            ((technical['rsi'] - 50) / 50) * 0.10 +  # RSI overbought/oversold
-            (technical['volume_trend'] / 100) * 0.15 + # Volume trend
-            technical['support_resistance'] * 0.10 +  # S/R levels
-            ((technical['volume_ratio'] - 1) * 0.5) * 0.05  # Volume spike
-        )
-        
-        # Volatility-adjusted confidence (higher volatility = more predictable moves)
-        volatility_factor = min(technical['volatility'] / 3.0, 1.0)
-        
-        # News impact timing decay (fresher news has more impact)
-        news_time = event.get('time', 0)
-        current_time = time.time() * 1000  # Convert to milliseconds
-        time_decay = 1.0
-        if news_time > 0:
-            hours_old = (current_time - news_time) / (1000 * 60 * 60)
-            time_decay = max(0.5, 1.0 - (hours_old * 0.1))  # Decay over time
-        
-        # Sentiment with time decay
-        adjusted_sentiment = sentiment * time_decay
-        
-        # Combined signal with new weights optimized for short-term prediction
-        # Technical analysis gets higher weight for 30-min predictions
-        combined_signal = (
-            technical_signal * 0.55 +      # Technical indicators (increased)
-            adjusted_sentiment * 0.30 +    # News sentiment with time decay
-            volatility_factor * 0.15       # Volatility confidence boost
-        )
-        
-        # Adaptive decision thresholds based on signal strength and volatility
-        base_threshold = 0.08
-        volatility_threshold_adjustment = technical['volatility'] * 0.01
-        decision_threshold = base_threshold + volatility_threshold_adjustment
-        
-        # Determine trading direction with adaptive thresholds
-        if combined_signal > decision_threshold:
-            decision = "LONG"
-        elif combined_signal < -decision_threshold:
-            decision = "SHORT"
-        else:
-            # For neutral signals, use multiple tiebreakers
-            if abs(technical['momentum']) > 0.5:
-                decision = "LONG" if technical['momentum'] > 0 else "SHORT"
-            elif abs(technical['price_trend']) > 0.3:
-                decision = "LONG" if technical['price_trend'] > 0 else "SHORT" 
-            elif abs(technical['candle_pattern']) > 0.2:
-                decision = "LONG" if technical['candle_pattern'] > 0 else "SHORT"
-            else:
-                # Final fallback: slight bias toward momentum
-                decision = "LONG" if technical['momentum'] >= 0 else "SHORT"
-        
-        # Calculate confidence with multiple factors
-        base_confidence = abs(combined_signal)
-        volatility_confidence = min(technical['volatility'] / 5.0, 0.3)  # Up to 30% boost
-        sentiment_confidence = min(abs(sentiment) * 0.2, 0.2)  # Up to 20% boost
-        
-        final_confidence = base_confidence + volatility_confidence + sentiment_confidence
-        
-        return {
-            'event_id': event.get('id'),
-            'decision': decision,
-            'confidence': min(final_confidence, 1.0),  # Cap at 1.0
-            'sentiment': sentiment,
-            'technical_signal': technical_signal,
-            'volatility': technical['volatility'],
-            'entry_price': entry_price,
-            'combined_signal': combined_signal,
-            'time_decay': time_decay,
-            'technical_details': technical  # Keep for debugging
-        }
+        """Clean, rules-based scoring using simple price action around the event."""
+        previous_candles = event.get('previous_candles', []) or []
+        observation_candles = event.get('observation_candles', []) or []
+
+        # Guard: need at least 1 observation candle
+        if not observation_candles:
+            return {
+                'event_id': event.get('id'),
+                'decision': 'LONG',
+                'confidence': 0.0
+            }
+
+        def f(c, k, default=0.0):
+            try:
+                return float(c.get(k, default))
+            except Exception:
+                return default
+
+        # Key prices
+        prev_close = f(previous_candles[-1], 'close', f(observation_candles[0], 'open', 0.0)) if previous_candles else f(observation_candles[0], 'open', 0.0)
+        prev_highs = [f(c, 'high', prev_close) for c in previous_candles[-5:]] if previous_candles else [prev_close]
+        prev_lows = [f(c, 'low', prev_close) for c in previous_candles[-5:]] if previous_candles else [prev_close]
+
+        obs1 = observation_candles[0]
+        obs2 = observation_candles[1] if len(observation_candles) >= 2 else None
+        obs3 = observation_candles[2] if len(observation_candles) >= 3 else None
+
+        o1_open = f(obs1, 'open'); o1_close = f(obs1, 'close'); o1_high = f(obs1, 'high'); o1_low = f(obs1, 'low')
+        o2_close = f(obs2, 'close', o1_close) if obs2 else o1_close
+        o3_close = f(obs3, 'close', o2_close) if obs3 else o2_close
+
+        def pct(a, b):
+            if b == 0:
+                return 0.0
+            return (a - b) / b
+
+        # Simple candle stats
+        o1_range = max(1e-9, o1_high - o1_low)
+        o1_body = abs(o1_close - o1_open)
+        o1_body_ratio = o1_body / o1_range
+        o1_is_green = o1_close > o1_open
+
+        # Signals
+        max_prev_high = max(prev_highs) if prev_highs else prev_close
+        min_prev_low = min(prev_lows) if prev_lows else prev_close
+
+        breakout_up_margin = pct(o1_close, max_prev_high)
+        breakout_dn_margin = pct(min_prev_low, o1_close)
+        gap_pct = pct(o1_open, prev_close)
+        follow_through = pct(o2_close, o1_close) + pct(o3_close, o2_close)
+        swing_move = pct(o3_close, o1_close)
+
+        # Trend over last 3 previous closes
+        prev_closes = [f(c, 'close', prev_close) for c in previous_candles[-3:]] if previous_candles else [prev_close]
+        trend_slope = 0.0
+        if len(prev_closes) >= 2:
+            trend_slope = pct(prev_closes[-1], prev_closes[0])
+
+        decision = 'LONG'
+        confidence = 0.0
+
+        # Rule 1: Gap reversal (fade overreaction)
+        if abs(gap_pct) >= 0.01:
+            # If price gaps and then moves back toward previous close, fade the gap
+            moved_back = (gap_pct > 0 and o2_close < o1_close) or (gap_pct < 0 and o2_close > o1_close)
+            long_upper_wick = (o1_high - max(o1_open, o1_close)) / o1_range > 0.5
+            long_lower_wick = (min(o1_open, o1_close) - o1_low) / o1_range > 0.5
+            if moved_back or (gap_pct > 0 and long_upper_wick) or (gap_pct < 0 and long_lower_wick):
+                decision = 'SHORT' if gap_pct > 0 else 'LONG'
+                confidence = min(1.0, abs(gap_pct) * 40 + o1_body_ratio * 0.4 + abs(swing_move) * 20)
+                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+
+        # Rule 2: Breakout continuation
+        if breakout_up_margin >= 0.005 and o1_is_green:
+            if follow_through >= 0 or o3_close >= o1_close:
+                decision = 'LONG'
+                confidence = min(1.0, breakout_up_margin * 60 + o1_body_ratio * 0.5 + max(0.0, follow_through) * 20)
+                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+        if breakout_dn_margin >= 0.005 and not o1_is_green:
+            if follow_through <= 0 or o3_close <= o1_close:
+                decision = 'SHORT'
+                confidence = min(1.0, breakout_dn_margin * 60 + o1_body_ratio * 0.5 + max(0.0, -follow_through) * 20)
+                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+
+        # Rule 3: Trend continuation if observation aligns with recent trend
+        if abs(trend_slope) >= 0.003:  # ~0.3%
+            if trend_slope > 0 and o1_is_green:
+                decision = 'LONG'
+                confidence = min(1.0, abs(trend_slope) * 100 + o1_body_ratio * 0.3)
+                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+            if trend_slope < 0 and not o1_is_green:
+                decision = 'SHORT'
+                confidence = min(1.0, abs(trend_slope) * 100 + o1_body_ratio * 0.3)
+                return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+
+        # Rule 4: Early momentum over observation window
+        if abs(swing_move) >= 0.003:
+            decision = 'LONG' if swing_move > 0 else 'SHORT'
+            confidence = min(1.0, abs(swing_move) * 100 + o1_body_ratio * 0.2)
+            return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
+
+        # Fallback: use first candle direction with low confidence
+        decision = 'LONG' if o1_is_green else 'SHORT'
+        confidence = min(1.0, o1_body_ratio * 0.3)
+        return {'event_id': event.get('id'), 'decision': decision, 'confidence': confidence}
     
     def select_best_trades(self, scored_events: List[Dict], target_count: int = 50) -> List[Dict]:
-        """Enhanced trade selection with multi-criteria optimization"""
+        """Simple selection: pick the highest-confidence 50 trades."""
         if not scored_events:
             return []
-            
-        # Filter out trades with very low confidence or weak signals
-        min_confidence = 0.1
-        quality_trades = [trade for trade in scored_events if trade['confidence'] >= min_confidence]
-        
-        if len(quality_trades) < target_count:
-            # If not enough quality trades, lower the bar slightly
-            min_confidence = 0.05
-            quality_trades = [trade for trade in scored_events if trade['confidence'] >= min_confidence]
-        
-        # Multi-criteria scoring for final selection
-        for trade in quality_trades:
-            # Base score from confidence
-            score = trade['confidence'] * 100
-            
-            # Bonus for strong technical signals
-            if abs(trade['technical_signal']) > 0.5:
-                score += 10
-            
-            # Bonus for high volatility (more predictable moves)
-            if trade['volatility'] > 2.0:
-                score += 5
-                
-            # Bonus for strong sentiment with good timing
-            sentiment_score = abs(trade['sentiment']) * trade.get('time_decay', 1.0)
-            if sentiment_score > 0.3:
-                score += sentiment_score * 10
-                
-            # Bonus for confluence of signals (when multiple indicators agree)
-            signal_agreement = 0
-            signals = [
-                trade['technical_signal'],
-                trade['sentiment'],
-                trade.get('technical_details', {}).get('momentum', 0) / 10,
-                trade.get('technical_details', {}).get('price_trend', 0) / 5
-            ]
-            
-            positive_signals = sum(1 for s in signals if s > 0.1)
-            negative_signals = sum(1 for s in signals if s < -0.1)
-            
-            if positive_signals >= 3 or negative_signals >= 3:
-                score += 15  # Bonus for signal confluence
-            elif positive_signals >= 2 or negative_signals >= 2:
-                score += 5
-                
-            trade['selection_score'] = score
-        
-        # Sort by selection score
-        quality_trades.sort(key=lambda x: x['selection_score'], reverse=True)
-        
-        # Smart portfolio construction
-        selected_trades = []
-        long_count = 0
-        short_count = 0
-        max_per_direction = int(target_count * 0.75)  # Allow up to 75% in one direction
-        
-        # First pass: select highest scoring trades with direction balance
-        for trade in quality_trades:
-            if len(selected_trades) >= target_count:
-                break
-                
-            if trade['decision'] == 'LONG':
-                if long_count < max_per_direction:
-                    selected_trades.append(trade)
-                    long_count += 1
-            else:  # SHORT
-                if short_count < max_per_direction:
-                    selected_trades.append(trade)
-                    short_count += 1
-        
-        # Second pass: fill remaining slots with best available
-        if len(selected_trades) < target_count:
-            remaining = [t for t in quality_trades if t not in selected_trades]
-            needed = target_count - len(selected_trades)
-            selected_trades.extend(remaining[:needed])
-        
-        # Final selection with minimum diversity requirement
-        final_selected = selected_trades[:target_count]
-        
-        # Ensure minimum diversity (at least 20% of each direction if possible)
-        final_long = [t for t in final_selected if t['decision'] == 'LONG']
-        final_short = [t for t in final_selected if t['decision'] == 'SHORT']
-        
-        min_minority = max(1, int(target_count * 0.2))  # At least 20% or 1 trade
-        
-        if len(final_long) < min_minority and len(final_short) >= min_minority:
-            # Need more LONG trades
-            unused_long = [t for t in quality_trades if t['decision'] == 'LONG' and t not in final_selected]
-            if unused_long:
-                needed_long = min(min_minority - len(final_long), len(unused_long))
-                # Replace lowest scoring SHORT trades with best unused LONG trades
-                final_short.sort(key=lambda x: x['selection_score'])
-                final_selected = final_short[needed_long:] + final_long + unused_long[:needed_long]
-                
-        elif len(final_short) < min_minority and len(final_long) >= min_minority:
-            # Need more SHORT trades
-            unused_short = [t for t in quality_trades if t['decision'] == 'SHORT' and t not in final_selected]
-            if unused_short:
-                needed_short = min(min_minority - len(final_short), len(unused_short))
-                # Replace lowest scoring LONG trades with best unused SHORT trades
-                final_long.sort(key=lambda x: x['selection_score'])
-                final_selected = final_long[needed_short:] + final_short + unused_short[:needed_short]
-        
-        return final_selected[:target_count]
+        scored_events.sort(key=lambda x: x.get('confidence', 0.0), reverse=True)
+        return scored_events[:target_count]
 
 @app.route("/trading-bot", methods=["POST"])
 def trading_bot():

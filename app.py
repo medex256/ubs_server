@@ -393,19 +393,30 @@ def play():
         q = request.args or {}
 
         merge_direction = body.get('mergeDirection')
-        mode = str(((body.get('options') or {}).get('mode') or q.get('mode') or 'classic'))
-        size_raw = (body.get('options') or {}).get('size', q.get('size', 4))
-        try:
-            size = int(size_raw)
-        except Exception:
-            return jsonify(error='Invalid size (2..10)'), 400
+
+        # mode and size
+        options_in = body.get('options') or {}
+        mode = str(options_in.get('mode') or q.get('mode') or 'classic')
+
+        grid = body.get('grid')
+
+        # size: use provided, else infer from grid, else default 4
+        size_value = options_in.get('size', q.get('size'))
+        if size_value is not None:
+            try:
+                size = int(size_value)
+            except Exception:
+                return jsonify(error='Invalid size (2..10)'), 400
+        elif isinstance(grid, list) and all(isinstance(row, list) for row in grid):
+            size = len(grid)
+        else:
+            size = 4
 
         if merge_direction not in ('UP', 'DOWN', 'LEFT', 'RIGHT'):
             return jsonify(error='Invalid mergeDirection'), 400
-        if not (2 <= size <= 10):
+        if not isinstance(size, int) or size < 2 or size > 10:
             return jsonify(error='Invalid size (2..10)'), 400
 
-        grid = body.get('grid')
         if not _adv_validate_grid(grid, size):
             return jsonify(error='Invalid grid for given size'), 400
 
@@ -414,9 +425,7 @@ def play():
         res = _adv_apply_move(before, merge_direction, options)
         after, moved = res['grid'], res['moved']
 
-        next_grid = after
-        if moved:
-            next_grid = _adv_spawn_random_tile(after)
+        next_grid = after if not moved else _adv_spawn_random_tile(after)
 
         end_game = None
         target = 2048
@@ -2099,6 +2108,268 @@ def calculate_mage_combat_time(intel, reserve, stamina):
     total_time += 10
     
     return total_time
+
+# --- 2048 advanced logic helpers ---
+
+def _is_empty(cell):
+    return cell is None
+
+def _is_zero_tile(cell):
+    return cell == '0'
+
+def _is_star2_tile(cell):
+    return cell == '*2'
+
+def _is_number_tile(cell):
+    return isinstance(cell, int) and cell >= 1
+
+def _adv_validate_grid(grid, size):
+    if not isinstance(grid, list) or len(grid) != size:
+        return False
+    for row in grid:
+        if not isinstance(row, list) or len(row) != size:
+            return False
+        for cell in row:
+            if not (
+                cell is None
+                or (isinstance(cell, str) and cell in ('0', '*2'))
+                or _is_number_tile(cell)
+            ):
+                return False
+    return True
+
+def _adv_rotate_grid(grid):
+    n = len(grid)
+    out = [[None] * n for _ in range(n)]
+    for r in range(n):
+        for c in range(n):
+            out[c][n - 1 - r] = grid[r][c]
+    return out
+
+def _adv_rotate_times(grid, times):
+    k = ((times % 4) + 4) % 4
+    g = grid
+    for _ in range(k):
+        g = _adv_rotate_grid(g)
+    return g
+
+def _adv_deep_clone(grid):
+    return [row[:] for row in grid]
+
+def _adv_empty_cells(grid):
+    cells = []
+    n = len(grid)
+    for r in range(n):
+        for c in range(n):
+            if _is_empty(grid[r][c]):
+                cells.append((r, c))
+    return cells
+
+def _adv_spawn_random_tile(grid):
+    empties = _adv_empty_cells(grid)
+    if not empties:
+        return grid
+    r, c = random.choice(empties)
+    val = 2 if random.random() < 0.9 else 4
+    g = _adv_deep_clone(grid)
+    g[r][c] = val
+    return g
+
+def _adv_has_target(grid, target=2048):
+    for row in grid:
+        for cell in row:
+            if cell == target:
+                return True
+    return False
+
+def _adv_any_moves_available_classic(grid):
+    n = len(grid)
+    if _adv_empty_cells(grid):
+        return True
+    for r in range(n):
+        for c in range(n):
+            v = grid[r][c]
+            if r + 1 < n and v == grid[r + 1][c]:
+                return True
+            if c + 1 < n and v == grid[r][c + 1]:
+                return True
+    return False
+
+def _adv_merge_row_left_classic(row):
+    n = len(row)
+    nums = [v for v in row if _is_number_tile(v)]
+    merged = []
+    i = 0
+    while i < len(nums):
+        if i + 1 < len(nums) and nums[i] == nums[i + 1]:
+            merged.append(nums[i] * 2)
+            i += 2
+        else:
+            merged.append(nums[i])
+            i += 1
+    while len(merged) < n:
+        merged.append(None)
+    return merged
+
+def _adv_move_row_left_advanced(row, options):
+    n = len(row)
+    out = [None] * n
+    moved = False
+
+    # Zero blockers only if enabled
+    zero_positions = [i for i, v in enumerate(row) if options.get('zeroBlocks', False) and _is_zero_tile(v)]
+    for z in zero_positions:
+        out[z] = '0'
+
+    # Segments split by zeros
+    segments = []
+    start = 0
+    for z in zero_positions:
+        if z > start:
+            segments.append((start, z - 1))
+        start = z + 1
+    if start <= n - 1:
+        segments.append((start, n - 1))
+
+    def set_if_moved():
+        nonlocal moved
+        for i in range(n):
+            if row[i] != out[i]:
+                moved = True
+                return
+
+    for L, R in segments if zero_positions else [(0, n - 1)]:
+        items = []
+        for i in range(L, R + 1):
+            v = row[i]
+            if v is not None and not _is_zero_tile(v):
+                items.append(v)
+
+        write = L
+        read = 0
+        while read < len(items):
+            cur = items[read]
+
+            if _is_star2_tile(cur) and options.get('star2', False):
+                front_idx = write - 1
+                if L <= front_idx and out[front_idx] is not None and not _is_zero_tile(out[front_idx]):
+                    front = out[front_idx]
+                    if _is_number_tile(front):
+                        out[front_idx] = front * 2
+                        read += 1
+                        continue
+                    elif _is_star2_tile(front):
+                        out[write] = cur
+                        write += 1
+                        read += 1
+                        continue
+                    else:
+                        out[write] = cur
+                        write += 1
+                        read += 1
+                        continue
+                else:
+                    out[write] = cur
+                    write += 1
+                    read += 1
+                    continue
+
+            if _is_number_tile(cur):
+                nxt = items[read + 1] if read + 1 < len(items) else None
+                if _is_star2_tile(nxt) and options.get('star2', False):
+                    out[write] = cur * 2
+                    write += 1
+                    read += 2
+                    continue
+
+                if _is_number_tile(nxt):
+                    same = (cur == nxt)
+                    both_ones = (options.get('oneRule', False) and cur == 1 and nxt == 1)
+                    if same and not both_ones:
+                        out[write] = cur * 2
+                        write += 1
+                        read += 2
+                        continue
+
+                out[write] = cur
+                write += 1
+                read += 1
+                continue
+
+            out[write] = cur
+            write += 1
+            read += 1
+
+    set_if_moved()
+    return {'row': out, 'moved': moved}
+
+def _adv_move_left_classic(grid):
+    n = len(grid)
+    out = []
+    moved = False
+    for r in range(n):
+        before = grid[r]
+        nums_only = [v if _is_number_tile(v) else None for v in before]
+        after = _adv_merge_row_left_classic(nums_only)
+        out.append(after)
+        if not moved and any(before[c] != after[c] for c in range(n)):
+            moved = True
+    return {'grid': out, 'moved': moved}
+
+def _adv_move_left_advanced(grid, options):
+    n = len(grid)
+    out = []
+    moved_flag = False
+    for r in range(n):
+        res = _adv_move_row_left_advanced(grid[r], options)
+        out.append(res['row'])
+        moved_flag = moved_flag or res['moved']
+    return {'grid': out, 'moved': moved_flag}
+
+def _adv_apply_move(grid, direction, mode_options):
+    if direction == 'LEFT':
+        times_in, times_out = 0, 0
+    elif direction == 'UP':
+        times_in, times_out = 3, 1
+    elif direction == 'RIGHT':
+        times_in, times_out = 2, 2
+    elif direction == 'DOWN':
+        times_in, times_out = 1, 3
+    else:
+        raise ValueError('Invalid direction')
+
+    rotated = _adv_rotate_times(grid, times_in)
+    if mode_options.get('classicOnly', False):
+        moved = _adv_move_left_classic(rotated)
+    else:
+        moved = _adv_move_left_advanced(rotated, mode_options)
+    restored = _adv_rotate_times(moved['grid'], times_out)
+    return {'grid': restored, 'moved': moved['moved']}
+
+def _adv_any_moves_available_advanced(grid, options):
+    for d in ('LEFT', 'RIGHT', 'UP', 'DOWN'):
+        res = _adv_apply_move(grid, d, options)
+        if res['moved']:
+            return True
+    return False
+
+def _adv_get_mode_options(mode):
+    m = (mode or 'classic').lower()
+    if m == 'classic':
+        return {'classicOnly': True}
+    if m == 'bigger':
+        return {'classicOnly': True}
+    if m == 'zero':
+        return {'classicOnly': False, 'zeroBlocks': True, 'star2': False, 'oneRule': False}
+    if m == 'star2':
+        return {'classicOnly': False, 'zeroBlocks': False, 'star2': True, 'oneRule': False}
+    if m == 'all':
+        return {'classicOnly': False, 'zeroBlocks': True, 'star2': True, 'oneRule': True}
+    return {'classicOnly': True}
+
+if __name__ == "__main__":
+    # For local development only
+    app.run()
 
 if __name__ == "__main__":
     # For local development only

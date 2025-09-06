@@ -399,175 +399,100 @@ def ticketing_agent():
     resp.headers["Content-Type"] = "application/json"
     return resp
 
-def find_extra_channels(connections):
-    """
-    Return edges that can be removed without increasing the number of connected components.
-    - Undirected graph
-    - Self-loops ignored
-    - Parallel edges: each instance is removable
-    - Flexible field name detection
-    """
-    if not isinstance(connections, list) or not connections:
-        return []
+def _edge_key(spy_one: str, spy_two: str) -> Tuple[str, str]:
+    if spy_one <= spy_two:
+        return spy_one, spy_two
+    return spy_two, spy_one
 
-    # Build simple graph adjacency, track original order and multiplicity
-    adjacency = {}  # node -> set(neighbors)
-    original_edges = []  # keep original order and format
-    multiplicity = {}  # key (a,b) where a<b -> count
 
-    def norm(u, v):
-        return (u, v) if u <= v else (v, u)
+def _find_bridges(nodes: Set[str], adjacency: Dict[str, Set[str]]) -> Set[frozenset]:
+    discovery_time: Dict[str, int] = {}
+    low_time: Dict[str, int] = {}
+    parent: Dict[str, str | None] = {}
+    visited: Set[str] = set()
+    bridges: Set[frozenset] = set()
+    time_counter: int = 0
 
-    # Detect field names from first connection
-    spy_field1, spy_field2 = "spy1", "spy2"
-    if connections:
-        first_conn = connections[0]
-        if isinstance(first_conn, dict):
-            keys = list(first_conn.keys())
-            if len(keys) >= 2:
-                # Try to detect spy field names
-                possible_names = ["spy1", "spy2", "Spy1", "Spy2", "agent1", "agent2", "node1", "node2"]
-                found_fields = [k for k in keys if k in possible_names]
-                if len(found_fields) >= 2:
-                    spy_field1, spy_field2 = found_fields[0], found_fields[1]
-                elif len(keys) == 2:
-                    # If exactly 2 keys, assume they are the spy fields
-                    spy_field1, spy_field2 = keys[0], keys[1]
+    def depth_first_search(source: str) -> None:
+        nonlocal time_counter
+        visited.add(source)
+        time_counter += 1
+        discovery_time[source] = time_counter
+        low_time[source] = time_counter
 
-    for conn in connections:
-        if not isinstance(conn, dict):
-            continue
-        
-        u = conn.get(spy_field1)
-        v = conn.get(spy_field2)
-        if not u or not v or u == v:
-            continue
+        for neighbor in adjacency.get(source, set()):
+            if neighbor not in visited:
+                parent[neighbor] = source
+                depth_first_search(neighbor)
+                low_time[source] = min(low_time[source], low_time[neighbor])
 
-        # Store original connection format
-        original_edges.append(conn.copy())
-        a, b = norm(u, v)
-        multiplicity[(a, b)] = multiplicity.get((a, b), 0) + 1
+                if low_time[neighbor] > discovery_time[source]:
+                    bridges.add(frozenset({source, neighbor}))
+            elif parent.get(source) != neighbor:
+                low_time[source] = min(low_time[source], discovery_time[neighbor])
 
-        # undirected adjacency
-        if u not in adjacency:
-            adjacency[u] = set()
-        if v not in adjacency:
-            adjacency[v] = set()
-        adjacency[u].add(v)
-        adjacency[v].add(u)
-
-    if not adjacency:
-        return []
-
-    # Tarjan's algorithm to find bridges on the simple graph
-    time_counter = [0]
-    discovery_time = {}
-    low_link = {}
-    parent = {}
-    bridges = set()  # store normalized pairs (a,b)
-
-    def dfs(u):
-        time_counter[0] += 1
-        discovery_time[u] = time_counter[0]
-        low_link[u] = time_counter[0]
-
-        for v in adjacency[u]:
-            if v not in discovery_time:
-                parent[v] = u
-                dfs(v)
-                low_link[u] = min(low_link[u], low_link[v])
-                if low_link[v] > discovery_time[u]:
-                    a, b = norm(u, v)
-                    bridges.add((a, b))
-            elif parent.get(u) != v:
-                low_link[u] = min(low_link[u], discovery_time[v])
-
-    for node in list(adjacency.keys()):
-        if node not in discovery_time:
+    for node in nodes:
+        if node not in visited:
             parent[node] = None
-            dfs(node)
+            depth_first_search(node)
 
-    # Select extras from original edges (preserve original format)
-    extras = []
-    for orig_conn in original_edges:
-        u = orig_conn.get(spy_field1)
-        v = orig_conn.get(spy_field2)
-        a, b = norm(u, v)
-        if multiplicity.get((a, b), 0) > 1:
-            # any parallel instance is removable
-            extras.append(orig_conn)
-        elif (a, b) not in bridges:
-            # non-bridge -> on a cycle -> removable
-            extras.append(orig_conn)
+    return bridges
 
-    return extras
 
-@app.route("/investigate", methods=["POST"])
+def _extra_channels(edges: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    multiplicity: Counter[Tuple[str, str]] = Counter(
+        _edge_key(edge["spy1"], edge["spy2"]) for edge in edges
+    )
+
+    adjacency: Dict[str, Set[str]] = defaultdict(set)
+    nodes: Set[str] = set()
+    for edge in edges:
+        spy_one = edge["spy1"]
+        spy_two = edge["spy2"]
+        nodes.add(spy_one)
+        nodes.add(spy_two)
+        key = _edge_key(spy_one, spy_two)
+        adjacency[key[0]].add(key[1])
+        adjacency[key[1]].add(key[0])
+
+    bridges: Set[frozenset] = _find_bridges(nodes, adjacency)
+
+    non_bridge_keys: Set[frozenset] = set()
+    for key, count in multiplicity.items():
+        undirected = frozenset(key)
+        if count > 1:
+            non_bridge_keys.add(undirected)
+
+    for node, neighbors in adjacency.items():
+        for neighbor in neighbors:
+            undirected = frozenset({node, neighbor})
+            if undirected not in bridges:
+                non_bridge_keys.add(undirected)
+
+    extra: List[Dict[str, str]] = []
+    for edge in edges:
+        undirected = frozenset(_edge_key(edge["spy1"], edge["spy2"]))
+        if undirected in non_bridge_keys:
+            extra.append({"spy1": edge["spy1"], "spy2": edge["spy2"]})
+
+    return extra
+
+@app.post("/investigate")
 def investigate():
-    try:
-        data = request.get_json(force=True, silent=True)
-    except Exception:
-        data = None
-        
-    if isinstance(data, dict):
-        if "networks" in data:
-            val = data["networks"]
-            if isinstance(val, list):
-                networks_data = val
-            elif isinstance(val, dict):
-                networks_data = [val]
-            else:
-                networks_data = []
-        elif "networkId" in data:
-            networks_data = [data]
-        else:
-            networks_data = []
-    elif isinstance(data, list):
-        networks_data = data
-    else:
-        networks_data = []
+    payload = request.get_json(force=True, silent=True) or {}
+    networks_input: List[Dict] = payload.get("networks", [])
 
-    if isinstance(networks_data, dict):
-        # Convert single object to list (fixes common API usage error)
-        networks_data = [networks_data]
-    if not isinstance(networks_data, list):
-        networks_data = []
-
-    result_networks = []
-    
-    # Process each network in the request
-    for item in networks_data:
-        if not isinstance(item, dict):
-            continue
-
-        # CRITICAL FIX: Get networkId and preserve it exactly as is
-        network_id = item.get("networkId")
-        
-        # Skip items without a networkId
-        if network_id is None:
-            continue
-
-        # Get network edges
-        network_edges = item.get("network", [])
-        if not isinstance(network_edges, list):
-            network_edges = []
-
-        # Find extra channels
-        try:
-            extra_channels = find_extra_channels(network_edges)
-        except Exception:
-            # Fallback: return empty list if algorithm fails
-            extra_channels = []
-
-        # Build response with exact same networkId
+    result_networks: List[Dict] = []
+    for network_entry in networks_input:
+        network_id = network_entry.get("networkId")
+        edges: List[Dict[str, str]] = network_entry.get("network", [])
+        extra = _extra_channels(edges)
         result_networks.append({
             "networkId": network_id,
-            "extraChannels": extra_channels
+            "extraChannels": extra,
         })
 
-    resp = make_response(jsonify({"networks": result_networks}), 200)
-    resp.headers["Content-Type"] = "application/json"
-    return resp
+    return jsonify({"networks": result_networks})
 
 
 @app.route("/")

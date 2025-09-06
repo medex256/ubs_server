@@ -51,12 +51,7 @@ class TimeSeriesImputer:
     
     def __init__(self):
         self.methods = [
-            'linear_interpolation',
-            'cubic_spline',
-            'polynomial_trend',
-            'autoregressive',
-            'seasonal_decomposition',
-            'gaussian_process'
+            'linear_interpolation'
         ]
     
     def linear_interpolation(self, series: np.ndarray, mask: np.ndarray) -> np.ndarray:

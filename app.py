@@ -403,11 +403,11 @@ def princess_diaries():
     schedule = []
     i = 0
     while i < n:
-        if dp_next[i] == -1:
-            i += 1                        # skipped
-        else:
+        if dp_next[i] == i + 1:          # we skipped task i
+            i += 1
+        else:                            # we took task i
             schedule.append(tasks[i]["name"])
-            i = next_compatible[i]        # jump to first compatible task
+            i = dp_next[i]       # jump to first compatible task
     # ------------------------------------------------------------------
 
     response = {
